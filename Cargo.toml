@@ -1,0 +1,20 @@
+[package]
+name = "rum"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+facet = "0.42"
+facet-toml = "0.42"
+miette = { version = "7", features = ["fancy"] }
+thiserror = "2"
+indicatif = "0.17"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
