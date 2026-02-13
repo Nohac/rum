@@ -25,7 +25,7 @@ impl super::Backend for LibvirtBackend {
         if reset {
             tracing::info!(name, "resetting VM");
             if let Ok(dom) = Domain::lookup_by_name(&conn, name) {
-                let _ = shutdown_domain(&dom);
+                let _ = shutdown_domain(&dom).await;
                 let _ = dom.undefine();
             }
             let _ = tokio::fs::remove_dir_all(&work).await;
@@ -297,7 +297,7 @@ fn is_running(dom: &Domain) -> bool {
     dom.is_active().unwrap_or(false)
 }
 
-fn shutdown_domain(dom: &Domain) -> Result<(), RumError> {
+async fn shutdown_domain(dom: &Domain) -> Result<(), RumError> {
     if !is_running(dom) {
         return Ok(());
     }
@@ -311,7 +311,7 @@ fn shutdown_domain(dom: &Domain) -> Result<(), RumError> {
         if !is_running(dom) {
             return Ok(());
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
     // Force

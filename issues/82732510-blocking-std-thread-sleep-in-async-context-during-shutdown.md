@@ -1,6 +1,6 @@
 # Blocking std thread sleep in async context during shutdown
 
-**ID:** 82732510 | **Status:** Open | **Created:** 2026-02-13T21:18:40+01:00
+**ID:** 82732510 | **Status:** Done | **Created:** 2026-02-13T21:18:40+01:00
 
 ## Summary
 
