@@ -77,6 +77,28 @@ Rust 2024 edition. Code is split into focused modules — avoid monolithic files
 - `rum up` attaches serial console via `virsh console` after boot
 - Default network is auto-started if defined but inactive
 
+## Issues
+
+Tracked as markdown files in `issues/`. Create new issues with:
+
+```bash
+scripts/create-issue.sh <issue title>
+```
+
+This generates `issues/<id>-<slug>.md` with a header:
+
+```markdown
+# Issue title
+
+**ID:** <8-char-hex> | **Status:** Open | **Created:** <iso-timestamp>
+```
+
+Below the header, write free-form markdown describing the issue — summary, approach, tasks, whatever is relevant. Keep it concise. Set **Status** to `Done` when resolved. Find open issues with:
+
+```bash
+rg 'Status:.*Open' issues/
+```
+
 ## Not Yet Implemented
 
 - SSH key injection, readiness polling, `rum ssh` command
