@@ -127,21 +127,34 @@ impl super::Backend for LibvirtBackend {
         drop(conn);
 
         // 7. Attach serial console via virsh
-        println!("Attaching console (press Ctrl+] to detach)...");
-        let status = tokio::process::Command::new("virsh")
+        println!("Attaching console (press Ctrl+C or Ctrl+] to detach)...");
+        let mut child = tokio::process::Command::new("virsh")
             .args(["-c", config.libvirt_uri(), "console", name])
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
-            .status()
-            .await
+            .spawn()
             .map_err(|e| RumError::Io {
                 context: "running virsh console".into(),
                 source: e,
             })?;
 
-        if !status.success() {
-            tracing::warn!("virsh console exited with {status}");
+        tokio::select! {
+            status = child.wait() => {
+                match status {
+                    Ok(s) if !s.success() => {
+                        tracing::warn!("virsh console exited with {s}");
+                    }
+                    Err(e) => {
+                        tracing::warn!("virsh console wait failed: {e}");
+                    }
+                    _ => {}
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                let _ = child.kill().await;
+                println!("\nDetached from console. VM is still running.");
+            }
         }
 
         Ok(())

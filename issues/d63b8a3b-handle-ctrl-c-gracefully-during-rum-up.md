@@ -1,6 +1,6 @@
 # Handle Ctrl-C gracefully during rum up
 
-**ID:** d63b8a3b | **Status:** Open | **Created:** 2026-02-13T21:14:04+01:00
+**ID:** d63b8a3b | **Status:** Done | **Created:** 2026-02-13T21:14:04+01:00
 
 ## Summary
 
