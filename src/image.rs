@@ -6,6 +6,40 @@ use tokio::io::AsyncWriteExt;
 
 use crate::error::RumError;
 
+/// Download a response body to a file, updating the progress bar as chunks arrive.
+async fn download_to_file(
+    path: &Path,
+    response: reqwest::Response,
+    pb: &ProgressBar,
+) -> Result<(), RumError> {
+    let mut file = tokio::fs::File::create(path)
+        .await
+        .map_err(|e| RumError::Io {
+            context: format!("creating temp file {}", path.display()),
+            source: e,
+        })?;
+
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| RumError::ImageDownload {
+            message: "error reading response body".into(),
+            source: Box::new(e),
+        })?;
+        file.write_all(&chunk).await.map_err(|e| RumError::Io {
+            context: "writing image data".into(),
+            source: e,
+        })?;
+        pb.inc(chunk.len() as u64);
+    }
+
+    file.flush().await.map_err(|e| RumError::Io {
+        context: "flushing image file".into(),
+        source: e,
+    })?;
+
+    Ok(())
+}
+
 /// Ensure the base image is available locally, downloading if needed.
 /// Returns the path to the cached image file.
 pub async fn ensure_base_image(base: &str, cache_dir: &Path) -> Result<PathBuf, RumError> {
@@ -62,31 +96,15 @@ pub async fn ensure_base_image(base: &str, cache_dir: &Path) -> Result<PathBuf, 
     );
 
     let tmp_path = dest.with_extension("part");
-    let mut file = tokio::fs::File::create(&tmp_path)
-        .await
-        .map_err(|e| RumError::Io {
-            context: format!("creating temp file {}", tmp_path.display()),
-            source: e,
-        })?;
 
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| RumError::ImageDownload {
-            message: "error reading response body".into(),
-            source: Box::new(e),
-        })?;
-        file.write_all(&chunk).await.map_err(|e| RumError::Io {
-            context: "writing image data".into(),
-            source: e,
-        })?;
-        pb.inc(chunk.len() as u64);
+    // Remove any stale .part file from a previous failed download
+    let _ = tokio::fs::remove_file(&tmp_path).await;
+
+    if let Err(e) = download_to_file(&tmp_path, response, &pb).await {
+        // Clean up the .part file on failure
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(e);
     }
-
-    file.flush().await.map_err(|e| RumError::Io {
-        context: "flushing image file".into(),
-        source: e,
-    })?;
-    drop(file);
 
     tokio::fs::rename(&tmp_path, &dest)
         .await

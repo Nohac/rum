@@ -1,6 +1,6 @@
 # Partial download part file not cleaned up on failure
 
-**ID:** f4a62541 | **Status:** Open | **Created:** 2026-02-13T21:18:40+01:00
+**ID:** f4a62541 | **Status:** Done | **Created:** 2026-02-13T21:18:40+01:00
 
 ## Summary
 
