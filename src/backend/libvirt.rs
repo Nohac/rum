@@ -8,6 +8,21 @@ use crate::config::Config;
 use crate::error::RumError;
 use crate::{cloudinit, domain_xml, image, overlay, paths};
 
+struct ConnGuard(Connect);
+
+impl std::ops::Deref for ConnGuard {
+    type Target = Connect;
+    fn deref(&self) -> &Connect {
+        &self.0
+    }
+}
+
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        self.0.close().ok();
+    }
+}
+
 pub struct LibvirtBackend;
 
 impl super::Backend for LibvirtBackend {
@@ -19,7 +34,7 @@ impl super::Backend for LibvirtBackend {
         let xml_path = paths::domain_xml_path(name);
         let cache = paths::cache_dir();
 
-        let mut conn = connect(config)?;
+        let conn = connect(config)?;
 
         // --reset: stop, undefine, wipe artifacts
         if reset {
@@ -102,7 +117,7 @@ impl super::Backend for LibvirtBackend {
             tracing::info!(name, "VM already running");
         }
 
-        conn.close().ok();
+        drop(conn);
 
         // 7. Attach serial console via virsh
         println!("Attaching console (press Ctrl+] to detach)...");
@@ -127,14 +142,13 @@ impl super::Backend for LibvirtBackend {
 
     async fn down(&self, config: &Config) -> Result<(), RumError> {
         let name = &config.name;
-        let mut conn = connect(config)?;
+        let conn = connect(config)?;
 
         let dom = Domain::lookup_by_name(&conn, name)
             .map_err(|_| RumError::DomainNotFound { name: name.clone() })?;
 
         if !is_running(&dom) {
             println!("VM '{name}' is not running.");
-            conn.close().ok();
             return Ok(());
         }
 
@@ -150,7 +164,6 @@ impl super::Backend for LibvirtBackend {
         loop {
             if !is_running(&dom) {
                 println!("VM '{name}' stopped.");
-                conn.close().ok();
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {
@@ -166,14 +179,13 @@ impl super::Backend for LibvirtBackend {
             hint: "check libvirt permissions".into(),
         })?;
         println!("VM '{name}' force stopped.");
-        conn.close().ok();
 
         Ok(())
     }
 
     async fn destroy(&self, config: &Config, purge: bool) -> Result<(), RumError> {
         let name = &config.name;
-        let mut conn = connect(config)?;
+        let conn = connect(config)?;
 
         if let Ok(dom) = Domain::lookup_by_name(&conn, name) {
             if is_running(&dom) {
@@ -214,13 +226,12 @@ impl super::Backend for LibvirtBackend {
         }
 
         println!("VM '{name}' destroyed.");
-        conn.close().ok();
         Ok(())
     }
 
     async fn status(&self, config: &Config) -> Result<(), RumError> {
         let name = &config.name;
-        let mut conn = connect(config)?;
+        let conn = connect(config)?;
 
         match Domain::lookup_by_name(&conn, name) {
             Ok(dom) => {
@@ -254,19 +265,20 @@ impl super::Backend for LibvirtBackend {
             }
         }
 
-        conn.close().ok();
         Ok(())
     }
 }
 
-fn connect(config: &Config) -> Result<Connect, RumError> {
-    Connect::open(Some(config.libvirt_uri())).map_err(|e| RumError::Libvirt {
-        message: format!("failed to connect to libvirt: {e}"),
-        hint: format!(
-            "ensure libvirtd is running and you have access to {}",
-            config.libvirt_uri()
-        ),
-    })
+fn connect(config: &Config) -> Result<ConnGuard, RumError> {
+    Connect::open(Some(config.libvirt_uri()))
+        .map(ConnGuard)
+        .map_err(|e| RumError::Libvirt {
+            message: format!("failed to connect to libvirt: {e}"),
+            hint: format!(
+                "ensure libvirtd is running and you have access to {}",
+                config.libvirt_uri()
+            ),
+        })
 }
 
 fn define_domain(conn: &Connect, xml: &str) -> Result<Domain, RumError> {

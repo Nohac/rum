@@ -1,6 +1,6 @@
 # Libvirt connection leaked on error paths
 
-**ID:** 98976bbe | **Status:** Open | **Created:** 2026-02-13T21:18:40+01:00
+**ID:** 98976bbe | **Status:** Done | **Created:** 2026-02-13T21:18:40+01:00
 
 ## Summary
 
