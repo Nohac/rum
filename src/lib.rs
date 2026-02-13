@@ -1,4 +1,9 @@
 pub mod backend;
 pub mod cli;
+pub mod cloudinit;
 pub mod config;
+pub mod domain_xml;
 pub mod error;
+pub mod image;
+pub mod overlay;
+pub mod paths;

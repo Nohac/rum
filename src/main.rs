@@ -25,8 +25,10 @@ fn main() -> miette::Result<()> {
         .unwrap()
         .block_on(async {
             match cli.command {
-                Command::Up { .. } => backend.up(&config).await?,
+                Command::Up { reset, .. } => backend.up(&config, reset).await?,
                 Command::Down => backend.down(&config).await?,
+                Command::Destroy { purge } => backend.destroy(&config, purge).await?,
+                Command::Status => backend.status(&config).await?,
             }
             Ok(())
         })
