@@ -1,6 +1,6 @@
 # Use tokio main macro instead of manual runtime
 
-**ID:** 020f11d3 | **Status:** Open | **Created:** 2026-02-13T21:14:04+01:00
+**ID:** 020f11d3 | **Status:** Done | **Created:** 2026-02-13T21:14:04+01:00
 
 ## Summary
 

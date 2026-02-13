@@ -5,7 +5,8 @@ use rum::backend::{self, Backend};
 use rum::cli::{Cli, Command};
 use rum::config;
 
-fn main() -> miette::Result<()> {
+#[tokio::main]
+async fn main() -> miette::Result<()> {
     let cli = Cli::parse();
 
     let filter = if cli.verbose {
@@ -19,17 +20,12 @@ fn main() -> miette::Result<()> {
     let config = config::load_config(&cli.config)?;
     let backend = backend::create_backend();
 
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async {
-            match cli.command {
-                Command::Up { reset, .. } => backend.up(&config, reset).await?,
-                Command::Down => backend.down(&config).await?,
-                Command::Destroy { purge } => backend.destroy(&config, purge).await?,
-                Command::Status => backend.status(&config).await?,
-            }
-            Ok(())
-        })
+    match cli.command {
+        Command::Up { reset, .. } => backend.up(&config, reset).await?,
+        Command::Down => backend.down(&config).await?,
+        Command::Destroy { purge } => backend.destroy(&config, purge).await?,
+        Command::Status => backend.status(&config).await?,
+    }
+
+    Ok(())
 }
