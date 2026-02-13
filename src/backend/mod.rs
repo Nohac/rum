@@ -3,6 +3,7 @@ pub mod libvirt;
 use crate::config::Config;
 use crate::error::RumError;
 
+#[allow(async_fn_in_trait)] // trait is internal-only
 pub trait Backend {
     async fn up(&self, config: &Config, reset: bool) -> Result<(), RumError>;
     async fn down(&self, config: &Config) -> Result<(), RumError>;

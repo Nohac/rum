@@ -1,3 +1,5 @@
+#![allow(unused_assignments)] // thiserror/miette proc macros trigger false positives
+
 pub mod backend;
 pub mod cli;
 pub mod cloudinit;
