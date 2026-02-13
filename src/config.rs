@@ -94,9 +94,18 @@ impl Config {
     }
 
     fn validate(&self) -> Result<(), RumError> {
-        if self.name.is_empty() {
+        let valid_name = !self.name.is_empty()
+            && self.name.chars().next().unwrap().is_ascii_alphanumeric()
+            && self
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-');
+        if !valid_name {
             return Err(RumError::Validation {
-                message: "name must not be empty".into(),
+                message: format!(
+                    "name must match [a-zA-Z0-9][a-zA-Z0-9._-]* (got '{}')",
+                    self.name
+                ),
             });
         }
         if self.resources.cpus < 1 {
@@ -126,4 +135,53 @@ pub fn load_config(path: &Path) -> Result<Config, RumError> {
 
     config.validate()?;
     Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_config(name: &str) -> Config {
+        Config {
+            name: name.into(),
+            image: ImageConfig {
+                base: "https://example.com/image.qcow2".into(),
+            },
+            resources: ResourcesConfig {
+                cpus: 1,
+                memory_mb: 512,
+            },
+            network: NetworkConfig::default(),
+            provision: ProvisionConfig::default(),
+            advanced: AdvancedConfig::default(),
+        }
+    }
+
+    #[test]
+    fn valid_names() {
+        for name in ["myvm", "test-vm", "vm.dev", "VM_01", "a"] {
+            valid_config(name).validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn invalid_names() {
+        for name in [
+            "",
+            "-bad",
+            ".bad",
+            "_bad",
+            "../etc",
+            "a/b",
+            "vm<inject>",
+            "vm&amp",
+            "hello world",
+        ] {
+            assert!(
+                valid_config(name).validate().is_err(),
+                "expected name '{}' to be rejected",
+                name
+            );
+        }
+    }
 }

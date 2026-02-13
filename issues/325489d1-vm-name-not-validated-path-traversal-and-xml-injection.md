@@ -1,6 +1,6 @@
 # VM name not validated - path traversal and XML injection
 
-**ID:** 325489d1 | **Status:** Open | **Created:** 2026-02-13T21:18:40+01:00
+**ID:** 325489d1 | **Status:** Done | **Created:** 2026-02-13T21:18:40+01:00
 
 ## Summary
 

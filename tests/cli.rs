@@ -59,7 +59,7 @@ memory_mb = 2048
         .args(["--config", config_path.to_str().unwrap(), "up"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("name must not be empty"));
+        .stderr(predicate::str::contains("name must match [a-zA-Z0-9][a-zA-Z0-9._-]*"));
 }
 
 #[test]
