@@ -58,17 +58,15 @@ impl super::Backend for LibvirtBackend {
             overlay::create_overlay(&base, &overlay_path).await?;
         }
 
-        // 3. Generate seed ISO if absent
-        if !seed_path.exists() {
-            println!("Generating cloud-init seed...");
-            cloudinit::generate_seed_iso(
-                &seed_path,
-                config.hostname(),
-                &config.provision.script,
-                &config.provision.packages,
-            )
-            .await?;
-        }
+        // 3. Generate seed ISO (always regenerate to pick up config changes)
+        println!("Generating cloud-init seed...");
+        cloudinit::generate_seed_iso(
+            &seed_path,
+            config.hostname(),
+            &config.provision.script,
+            &config.provision.packages,
+        )
+        .await?;
 
         // 4. Generate domain XML
         let xml = domain_xml::generate_domain_xml(config, &overlay_path, &seed_path);

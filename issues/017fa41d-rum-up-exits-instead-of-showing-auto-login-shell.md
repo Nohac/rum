@@ -1,6 +1,6 @@
 # rum up exits instead of showing auto-login shell
 
-**ID:** 017fa41d | **Status:** Open | **Created:** 2026-02-13T22:05:59+01:00
+**ID:** 017fa41d | **Status:** Done | **Created:** 2026-02-13T22:05:59+01:00
 
 ## Summary
 
