@@ -1,6 +1,6 @@
 # Multiline provision scripts broken by line splitting
 
-**ID:** f845a0d1 | **Status:** Open | **Created:** 2026-02-13T21:18:40+01:00
+**ID:** f845a0d1 | **Status:** Done | **Created:** 2026-02-13T21:18:40+01:00
 
 ## Summary
 

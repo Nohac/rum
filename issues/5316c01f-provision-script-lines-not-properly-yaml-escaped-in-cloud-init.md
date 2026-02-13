@@ -1,6 +1,6 @@
 # Provision script lines not properly YAML-escaped in cloud-init
 
-**ID:** 5316c01f | **Status:** Open | **Created:** 2026-02-13T21:18:40+01:00
+**ID:** 5316c01f | **Status:** Done | **Created:** 2026-02-13T21:18:40+01:00
 
 ## Summary
 

@@ -52,15 +52,27 @@ fn build_user_data(provision_script: &str, packages: &[String]) -> String {
     if !packages.is_empty() {
         ud.push_str("packages:\n");
         for pkg in packages {
-            ud.push_str(&format!("  - {pkg}\n"));
+            ud.push_str(&format!(
+                "  - \"{}\"\n",
+                pkg.replace('\\', "\\\\").replace('"', "\\\"")
+            ));
         }
     }
 
     if !provision_script.is_empty() {
-        ud.push_str("runcmd:\n");
+        ud.push_str("write_files:\n");
+        ud.push_str("  - path: /var/lib/cloud/scripts/rum-provision.sh\n");
+        ud.push_str("    permissions: \"0755\"\n");
+        ud.push_str("    content: |\n");
         for line in provision_script.lines() {
-            ud.push_str(&format!("  - {line}\n"));
+            if line.is_empty() {
+                ud.push('\n');
+            } else {
+                ud.push_str(&format!("      {line}\n"));
+            }
         }
+        ud.push_str("runcmd:\n");
+        ud.push_str("  - [\"/bin/bash\", \"/var/lib/cloud/scripts/rum-provision.sh\"]\n");
     }
 
     ud
@@ -111,19 +123,41 @@ mod tests {
     }
 
     #[test]
-    fn user_data_includes_packages() {
+    fn user_data_packages_are_quoted() {
         let ud = build_user_data("", &["curl".into(), "git".into()]);
         assert!(ud.contains("packages:"));
-        assert!(ud.contains("  - curl"));
-        assert!(ud.contains("  - git"));
+        assert!(ud.contains("  - \"curl\""));
+        assert!(ud.contains("  - \"git\""));
     }
 
     #[test]
-    fn user_data_includes_runcmd() {
+    fn user_data_yaml_special_chars_in_packages() {
+        let ud = build_user_data("", &["foo: bar".into(), "baz\"qux".into()]);
+        assert!(ud.contains("  - \"foo: bar\""));
+        assert!(ud.contains("  - \"baz\\\"qux\""));
+    }
+
+    #[test]
+    fn user_data_provision_uses_write_files() {
         let ud = build_user_data("echo hello\necho world", &[]);
+        assert!(ud.contains("write_files:"));
+        assert!(ud.contains("  - path: /var/lib/cloud/scripts/rum-provision.sh"));
+        assert!(ud.contains("    content: |\n"));
+        assert!(ud.contains("      echo hello\n"));
+        assert!(ud.contains("      echo world\n"));
         assert!(ud.contains("runcmd:"));
-        assert!(ud.contains("  - echo hello"));
-        assert!(ud.contains("  - echo world"));
+        assert!(ud.contains(
+            "  - [\"/bin/bash\", \"/var/lib/cloud/scripts/rum-provision.sh\"]"
+        ));
+    }
+
+    #[test]
+    fn user_data_multiline_script_preserved() {
+        let script = "if true; then\n  echo yes\nfi";
+        let ud = build_user_data(script, &[]);
+        assert!(ud.contains("      if true; then\n"));
+        assert!(ud.contains("        echo yes\n"));
+        assert!(ud.contains("      fi\n"));
     }
 
     #[test]
