@@ -3,6 +3,7 @@ use std::process::Stdio;
 use indicatif::ProgressBar;
 use virt::connect::Connect;
 use virt::domain::Domain;
+use virt::error as virt_error;
 use virt::network::Network;
 
 use crate::config::Config;
@@ -295,6 +296,11 @@ impl super::Backend for LibvirtBackend {
 }
 
 fn connect(config: &Config) -> Result<ConnGuard, RumError> {
+    // Suppress libvirt's default error handler that prints to stderr.
+    // This installs a no-op callback so errors are only surfaced through
+    // Rust's Result types, not printed to stderr by the C library.
+    virt_error::clear_error_callback();
+
     Connect::open(Some(config.libvirt_uri()))
         .map(ConnGuard)
         .map_err(|e| RumError::Libvirt {

@@ -1,6 +1,6 @@
 # rum destroy shows libvirt error for nonexistent domain
 
-**ID:** 421138ac | **Status:** Open | **Created:** 2026-02-13T22:05:59+01:00
+**ID:** 421138ac | **Status:** Done | **Created:** 2026-02-13T22:05:59+01:00
 
 ## Summary
 
