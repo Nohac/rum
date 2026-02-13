@@ -1,6 +1,6 @@
 # Auto-login on serial console after boot
 
-**ID:** 2568adcd | **Status:** Open | **Created:** 2026-02-13T21:14:04+01:00
+**ID:** 2568adcd | **Status:** Done | **Created:** 2026-02-13T21:14:04+01:00
 
 ## Summary
 

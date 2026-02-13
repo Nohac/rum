@@ -59,8 +59,17 @@ fn build_user_data(provision_script: &str, packages: &[String]) -> String {
         }
     }
 
+    // Always emit write_files for the autologin drop-in.
+    ud.push_str("write_files:\n");
+    ud.push_str(
+        "  - path: /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf\n",
+    );
+    ud.push_str("    content: |\n");
+    ud.push_str("      [Service]\n");
+    ud.push_str("      ExecStart=\n");
+    ud.push_str("      ExecStart=-/sbin/agetty --autologin rum --noclear %I $TERM\n");
+
     if !provision_script.is_empty() {
-        ud.push_str("write_files:\n");
         ud.push_str("  - path: /var/lib/cloud/scripts/rum-provision.sh\n");
         ud.push_str("    permissions: \"0755\"\n");
         ud.push_str("    content: |\n");
@@ -135,6 +144,31 @@ mod tests {
         let ud = build_user_data("", &["foo: bar".into(), "baz\"qux".into()]);
         assert!(ud.contains("  - \"foo: bar\""));
         assert!(ud.contains("  - \"baz\\\"qux\""));
+    }
+
+    #[test]
+    fn user_data_always_contains_autologin_dropin() {
+        let ud = build_user_data("", &[]);
+        assert!(ud.contains("write_files:"));
+        assert!(ud.contains(
+            "  - path: /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf"
+        ));
+        assert!(ud.contains("ExecStart=-/sbin/agetty --autologin rum --noclear %I $TERM"));
+    }
+
+    #[test]
+    fn user_data_autologin_present_with_provision_script() {
+        let ud = build_user_data("echo hello", &[]);
+        // autologin entry comes before provision script entry
+        let autologin_pos = ud.find("autologin.conf").unwrap();
+        let provision_pos = ud.find("rum-provision.sh").unwrap();
+        assert!(autologin_pos < provision_pos);
+    }
+
+    #[test]
+    fn user_data_no_runcmd_without_provision() {
+        let ud = build_user_data("", &[]);
+        assert!(!ud.contains("runcmd:"));
     }
 
     #[test]
