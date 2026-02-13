@@ -20,9 +20,6 @@ pub struct Cli {
 pub enum Command {
     /// Create and start the VM
     Up {
-        /// VM name (overrides config)
-        name: Option<String>,
-
         /// Wipe overlay + seed to force fresh first boot
         #[arg(long)]
         reset: bool,

@@ -1,6 +1,6 @@
 # Up command name argument silently ignored
 
-**ID:** 11f75739 | **Status:** Open | **Created:** 2026-02-13T21:18:40+01:00
+**ID:** 11f75739 | **Status:** Done | **Created:** 2026-02-13T21:18:40+01:00
 
 ## Summary
 
