@@ -1,5 +1,6 @@
 use std::process::Stdio;
 
+use indicatif::ProgressBar;
 use virt::connect::Connect;
 use virt::domain::Domain;
 use virt::network::Network;
@@ -47,15 +48,18 @@ impl super::Backend for LibvirtBackend {
         }
 
         // 1. Ensure base image
+        println!("Ensuring base image...");
         let base = image::ensure_base_image(&config.image.base, &cache).await?;
 
         // 2. Create overlay if absent
         if !overlay_path.exists() {
+            println!("Creating disk overlay...");
             overlay::create_overlay(&base, &overlay_path).await?;
         }
 
         // 3. Generate seed ISO if absent
         if !seed_path.exists() {
+            println!("Generating cloud-init seed...");
             cloudinit::generate_seed_iso(
                 &seed_path,
                 config.hostname(),
@@ -69,6 +73,7 @@ impl super::Backend for LibvirtBackend {
         let xml = domain_xml::generate_domain_xml(config, &overlay_path, &seed_path);
 
         // 5. Define or redefine domain
+        println!("Configuring VM...");
         let existing = Domain::lookup_by_name(&conn, name);
         match existing {
             Ok(dom) => {
@@ -99,6 +104,7 @@ impl super::Backend for LibvirtBackend {
             })?;
 
         // 6. Ensure default network is active
+        println!("Checking network...");
         ensure_default_network(&conn)?;
 
         // 7. Start if not running
@@ -108,6 +114,7 @@ impl super::Backend for LibvirtBackend {
         })?;
 
         if !is_running(&dom) {
+            println!("Starting VM...");
             dom.create().map_err(|e| RumError::Libvirt {
                 message: format!("failed to start domain: {e}"),
                 hint: "check `virsh -c qemu:///system start` for details".into(),
@@ -160,16 +167,21 @@ impl super::Backend for LibvirtBackend {
         })?;
 
         // Wait up to 30s for shutdown
+        let spinner = ProgressBar::new_spinner();
+        spinner.set_message(format!("Waiting for VM '{name}' to shut down..."));
+        spinner.enable_steady_tick(std::time::Duration::from_millis(120));
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
             if !is_running(&dom) {
-                println!("VM '{name}' stopped.");
+                spinner.finish_with_message(format!("VM '{name}' stopped."));
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {
+                spinner.finish_and_clear();
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            spinner.tick();
         }
 
         // Force stop

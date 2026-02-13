@@ -1,6 +1,6 @@
 # No user-facing progress during rum up steps
 
-**ID:** adad6d7c | **Status:** Open | **Created:** 2026-02-13T21:18:40+01:00
+**ID:** adad6d7c | **Status:** Done | **Created:** 2026-02-13T21:18:40+01:00
 
 ## Summary
 
