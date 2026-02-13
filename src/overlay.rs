@@ -14,16 +14,10 @@ pub async fn create_overlay(base_image: &Path, overlay_path: &Path) -> Result<()
     }
 
     let output = tokio::process::Command::new("qemu-img")
-        .args([
-            "create",
-            "-f",
-            "qcow2",
-            "-b",
-            &base_image.to_string_lossy(),
-            "-F",
-            "qcow2",
-            &overlay_path.to_string_lossy(),
-        ])
+        .args(["create", "-f", "qcow2", "-b"])
+        .arg(base_image)
+        .args(["-F", "qcow2"])
+        .arg(overlay_path)
         .output()
         .await
         .map_err(|e| RumError::Io {

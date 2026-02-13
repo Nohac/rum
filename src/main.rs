@@ -12,7 +12,7 @@ async fn main() -> miette::Result<()> {
     let filter = if cli.verbose {
         EnvFilter::new("debug")
     } else {
-        EnvFilter::from_default_env().add_directive("rum=info".parse().unwrap())
+        EnvFilter::from_default_env().add_directive("rum=info".parse().expect("valid log directive"))
     };
 
     tracing_subscriber::fmt().with_env_filter(filter).init();

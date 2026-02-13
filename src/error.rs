@@ -1,9 +1,8 @@
-#![allow(unused_assignments)] // thiserror/miette proc macros trigger false positives
-
 use miette::Diagnostic;
 use thiserror::Error;
 
 #[derive(Debug, Error, Diagnostic)]
+#[allow(unused_assignments)] // thiserror/miette proc macros trigger false positives
 pub enum RumError {
     #[error("failed to load config from {path}")]
     ConfigLoad {

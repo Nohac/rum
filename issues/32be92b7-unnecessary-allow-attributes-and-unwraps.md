@@ -1,6 +1,6 @@
 # Unnecessary allow attributes and unwraps
 
-**ID:** 32be92b7 | **Status:** Open | **Created:** 2026-02-13T21:18:40+01:00
+**ID:** 32be92b7 | **Status:** Done | **Created:** 2026-02-13T21:18:40+01:00
 
 ## Summary
 
