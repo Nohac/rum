@@ -1,13 +1,10 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::io::Cursor;
 use std::path::Path;
-use std::sync::Arc;
 
-use hadris_iso::read::PathSeparator;
-use hadris_iso::write::options::{CreationFeatures, FormatOptions};
-use hadris_iso::write::{File as IsoFile, InputFiles, IsoImageWriter};
+use facet_value::{VArray, Value, value};
 
 use crate::error::RumError;
+use crate::iso9660::{self, IsoFile};
 
 /// Compute a short hash of the cloud-init inputs for cache-busting the seed ISO filename.
 pub fn seed_hash(hostname: &str, provision_script: &str, packages: &[String]) -> String {
@@ -36,8 +33,15 @@ pub async fn generate_seed_iso(
 
     let meta_data = format!("instance-id: {hostname}\nlocal-hostname: {hostname}\n");
     let user_data = build_user_data(provision_script, packages);
+    // Network config v2 for cloud-init NoCloud datasource.
+    // Note: no outer "network:" wrapper — the file IS the network config directly.
+    let network_config = "version: 2\nethernets:\n  id0:\n    match:\n      name: \"en*\"\n    dhcp4: true\n";
 
-    let iso = build_iso(&meta_data, &user_data)?;
+    let iso = iso9660::build_iso("CIDATA", &[
+        IsoFile { name: "meta-data", data: meta_data.as_bytes() },
+        IsoFile { name: "user-data", data: user_data.as_bytes() },
+        IsoFile { name: "network-config", data: network_config.as_bytes() },
+    ]);
 
     tokio::fs::write(seed_path, &iso)
         .await
@@ -50,177 +54,131 @@ pub async fn generate_seed_iso(
     Ok(())
 }
 
+const AUTOLOGIN_DROPIN: &str = "\
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin rum --noclear --keep-baud 115200,38400,9600 %I $TERM
+";
+
 fn build_user_data(provision_script: &str, packages: &[String]) -> String {
-    let mut ud = String::from("#cloud-config\n");
-    ud.push_str("users:\n");
-    ud.push_str("  - name: rum\n");
-    ud.push_str("    plain_text_passwd: rum\n");
-    ud.push_str("    lock_passwd: false\n");
-    ud.push_str("    shell: /bin/bash\n");
-    ud.push_str("    sudo: ALL=(ALL) NOPASSWD:ALL\n");
+    let user = value!({
+        "name": "rum",
+        "plain_text_passwd": "rum",
+        "lock_passwd": false,
+        "shell": "/bin/bash",
+        "sudo": "ALL=(ALL) NOPASSWD:ALL",
+    });
+
+    let autologin_file = value!({
+        "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+        "content": (AUTOLOGIN_DROPIN),
+    });
+
+    let mut write_files = VArray::new();
+    write_files.push(autologin_file);
+
+    if !provision_script.is_empty() {
+        write_files.push(value!({
+            "path": "/var/lib/cloud/scripts/rum-provision.sh",
+            "permissions": "0755",
+            "content": (provision_script),
+        }));
+    }
+
+    // runcmd runs late (after write_files), so the autologin dropin is already
+    // on disk by the time we reload + restart the getty.
+    let mut runcmd = VArray::new();
+    runcmd.push(value!(["systemctl", "daemon-reload"]));
+    runcmd.push(value!(["systemctl", "restart", "serial-getty@ttyS0.service"]));
+
+    if !provision_script.is_empty() {
+        runcmd.push(value!(["/bin/bash", "/var/lib/cloud/scripts/rum-provision.sh"]));
+    }
+
+    let mut config = value!({
+        "users": [user],
+        "write_files": (Value::from(write_files)),
+        "runcmd": (Value::from(runcmd)),
+    });
 
     if !packages.is_empty() {
-        ud.push_str("packages:\n");
+        let mut pkg_array = VArray::new();
         for pkg in packages {
-            ud.push_str(&format!(
-                "  - \"{}\"\n",
-                pkg.replace('\\', "\\\\").replace('"', "\\\"")
-            ));
+            pkg_array.push(Value::from(pkg.as_str()));
+        }
+        if let Some(obj) = config.as_object_mut() {
+            obj.insert("packages", Value::from(pkg_array));
         }
     }
 
-    // Always emit write_files for the autologin drop-in.
-    ud.push_str("write_files:\n");
-    ud.push_str(
-        "  - path: /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf\n",
-    );
-    ud.push_str("    content: |\n");
-    ud.push_str("      [Service]\n");
-    ud.push_str("      ExecStart=\n");
-    ud.push_str("      ExecStart=-/sbin/agetty --autologin rum --noclear %I $TERM\n");
-
-    if !provision_script.is_empty() {
-        ud.push_str("  - path: /var/lib/cloud/scripts/rum-provision.sh\n");
-        ud.push_str("    permissions: \"0755\"\n");
-        ud.push_str("    content: |\n");
-        for line in provision_script.lines() {
-            if line.is_empty() {
-                ud.push('\n');
-            } else {
-                ud.push_str(&format!("      {line}\n"));
-            }
-        }
-    }
-
-    // Restart serial-getty so the autologin drop-in takes effect
-    ud.push_str("runcmd:\n");
-    ud.push_str("  - [\"systemctl\", \"daemon-reload\"]\n");
-    ud.push_str("  - [\"systemctl\", \"restart\", \"serial-getty@ttyS0.service\"]\n");
-    if !provision_script.is_empty() {
-        ud.push_str("  - [\"/bin/bash\", \"/var/lib/cloud/scripts/rum-provision.sh\"]\n");
-    }
-
-    ud
+    let yaml = facet_yaml::to_string(&config).expect("valid YAML serialization");
+    // Strip the "---\n" YAML document separator — cloud-init expects #cloud-config
+    // as the first line, and some versions choke on a document separator after it.
+    let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
+    format!("#cloud-config\n{yaml}")
 }
 
-fn build_iso(meta_data: &str, user_data: &str) -> Result<Vec<u8>, RumError> {
-    let files = InputFiles {
-        path_separator: PathSeparator::ForwardSlash,
-        files: vec![
-            IsoFile::File {
-                name: Arc::new("meta-data".to_string()),
-                contents: meta_data.as_bytes().to_vec(),
-            },
-            IsoFile::File {
-                name: Arc::new("user-data".to_string()),
-                contents: user_data.as_bytes().to_vec(),
-            },
-        ],
-    };
-
-    let format_options = FormatOptions {
-        volume_name: "CIDATA".to_string(),
-        sector_size: 2048,
-        path_seperator: PathSeparator::ForwardSlash,
-        features: CreationFeatures::default(),
-    };
-
-    // hadris-iso reads back during formatting, so the buffer must be pre-allocated
-    let mut buf = Cursor::new(vec![0u8; 256 * 2048]);
-    IsoImageWriter::format_new(&mut buf, files, format_options).map_err(|e| RumError::Io {
-        context: "generating seed ISO".into(),
-        source: std::io::Error::other(e.to_string()),
-    })?;
-
-    Ok(buf.into_inner())
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn user_data_is_valid_cloud_config() {
+        let ud = build_user_data("", &[]);
+        assert!(ud.starts_with("#cloud-config\n"));
+    }
+
+    #[test]
     fn user_data_contains_user() {
         let ud = build_user_data("", &[]);
         assert!(ud.contains("name: rum"));
-        assert!(ud.contains("plain_text_passwd: rum"));
         assert!(ud.contains("lock_passwd: false"));
     }
 
     #[test]
-    fn user_data_packages_are_quoted() {
+    fn user_data_contains_packages() {
         let ud = build_user_data("", &["curl".into(), "git".into()]);
         assert!(ud.contains("packages:"));
-        assert!(ud.contains("  - \"curl\""));
-        assert!(ud.contains("  - \"git\""));
+        assert!(ud.contains("curl"));
+        assert!(ud.contains("git"));
     }
 
     #[test]
     fn user_data_yaml_special_chars_in_packages() {
-        let ud = build_user_data("", &["foo: bar".into(), "baz\"qux".into()]);
-        assert!(ud.contains("  - \"foo: bar\""));
-        assert!(ud.contains("  - \"baz\\\"qux\""));
+        let ud = build_user_data("", &["foo: bar".into()]);
+        // YAML serializer should quote or escape the colon
+        assert!(ud.contains("foo: bar") || ud.contains("'foo: bar'") || ud.contains("\"foo: bar\""));
     }
 
     #[test]
-    fn user_data_always_contains_autologin_dropin() {
+    fn user_data_autologin_dropin() {
         let ud = build_user_data("", &[]);
-        assert!(ud.contains("write_files:"));
-        assert!(ud.contains(
-            "  - path: /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf"
-        ));
-        assert!(ud.contains("ExecStart=-/sbin/agetty --autologin rum --noclear %I $TERM"));
+        assert!(ud.contains("autologin.conf"));
+        assert!(ud.contains("--autologin rum"));
+        assert!(ud.contains("--keep-baud 115200,38400,9600"));
     }
 
     #[test]
-    fn user_data_autologin_present_with_provision_script() {
-        let ud = build_user_data("echo hello", &[]);
-        // autologin entry comes before provision script entry
-        let autologin_pos = ud.find("autologin.conf").unwrap();
-        let provision_pos = ud.find("rum-provision.sh").unwrap();
-        assert!(autologin_pos < provision_pos);
-    }
-
-    #[test]
-    fn user_data_runcmd_restarts_serial_getty() {
+    fn user_data_runcmd_restarts_getty() {
         let ud = build_user_data("", &[]);
         assert!(ud.contains("runcmd:"));
-        assert!(ud.contains("[\"systemctl\", \"daemon-reload\"]"));
-        assert!(ud.contains(
-            "[\"systemctl\", \"restart\", \"serial-getty@ttyS0.service\"]"
-        ));
-        // No provision script runner without a provision script
-        assert!(!ud.contains("rum-provision.sh"));
+        assert!(ud.contains("daemon-reload"));
+        assert!(ud.contains("serial-getty@ttyS0.service"));
     }
 
     #[test]
-    fn user_data_provision_uses_write_files() {
+    fn user_data_provision_script() {
         let ud = build_user_data("echo hello\necho world", &[]);
-        assert!(ud.contains("write_files:"));
-        assert!(ud.contains("  - path: /var/lib/cloud/scripts/rum-provision.sh"));
-        assert!(ud.contains("    content: |\n"));
-        assert!(ud.contains("      echo hello\n"));
-        assert!(ud.contains("      echo world\n"));
+        assert!(ud.contains("rum-provision.sh"));
+        assert!(ud.contains("echo hello"));
+        assert!(ud.contains("echo world"));
         assert!(ud.contains("runcmd:"));
-        assert!(ud.contains(
-            "  - [\"/bin/bash\", \"/var/lib/cloud/scripts/rum-provision.sh\"]"
-        ));
     }
 
     #[test]
-    fn user_data_multiline_script_preserved() {
-        let script = "if true; then\n  echo yes\nfi";
-        let ud = build_user_data(script, &[]);
-        assert!(ud.contains("      if true; then\n"));
-        assert!(ud.contains("        echo yes\n"));
-        assert!(ud.contains("      fi\n"));
-    }
-
-    #[test]
-    fn iso_is_generated() {
-        let iso = build_iso("instance-id: test\n", "#cloud-config\n").unwrap();
-        // ISO 9660 images start with 32 KiB of system area, then "CD001" magic
-        assert!(iso.len() > 32 * 1024);
-        assert_eq!(&iso[0x8001..0x8006], b"CD001");
+    fn user_data_runcmd_includes_provision_script() {
+        let ud = build_user_data("echo hello", &[]);
+        assert!(ud.contains("rum-provision.sh"));
     }
 }

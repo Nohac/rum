@@ -6,8 +6,8 @@ edition = "2024"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
-facet = "0.42"
-facet-toml = "0.42"
+facet = "0.43"
+facet-toml = "0.43"
 miette = { version = "7", features = ["fancy"] }
 thiserror = "2"
 indicatif = "0.17"
@@ -17,7 +17,8 @@ reqwest = { version = "0.12", features = ["stream"] }
 dirs = "6"
 virt = "0.4"
 futures-util = "0.3"
-hadris-iso = { version = "0.2", features = ["write"] }
+facet-value = "0.43"
+facet-yaml = "0.43"
 
 [dev-dependencies]
 assert_cmd = "2"

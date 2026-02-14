@@ -7,5 +7,6 @@ pub mod config;
 pub mod domain_xml;
 pub mod error;
 pub mod image;
+pub mod iso9660;
 pub mod overlay;
 pub mod paths;
