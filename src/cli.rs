@@ -37,4 +37,10 @@ pub enum Command {
 
     /// Show VM state
     Status,
+
+    /// Dump the generated cloud-init seed ISO to a directory (for debugging)
+    DumpIso {
+        /// Output directory
+        dir: PathBuf,
+    },
 }
