@@ -90,7 +90,13 @@ fn build_user_data(provision_script: &str, packages: &[String]) -> String {
                 ud.push_str(&format!("      {line}\n"));
             }
         }
-        ud.push_str("runcmd:\n");
+    }
+
+    // Restart serial-getty so the autologin drop-in takes effect
+    ud.push_str("runcmd:\n");
+    ud.push_str("  - [\"systemctl\", \"daemon-reload\"]\n");
+    ud.push_str("  - [\"systemctl\", \"restart\", \"serial-getty@ttyS0.service\"]\n");
+    if !provision_script.is_empty() {
         ud.push_str("  - [\"/bin/bash\", \"/var/lib/cloud/scripts/rum-provision.sh\"]\n");
     }
 
@@ -176,9 +182,15 @@ mod tests {
     }
 
     #[test]
-    fn user_data_no_runcmd_without_provision() {
+    fn user_data_runcmd_restarts_serial_getty() {
         let ud = build_user_data("", &[]);
-        assert!(!ud.contains("runcmd:"));
+        assert!(ud.contains("runcmd:"));
+        assert!(ud.contains("[\"systemctl\", \"daemon-reload\"]"));
+        assert!(ud.contains(
+            "[\"systemctl\", \"restart\", \"serial-getty@ttyS0.service\"]"
+        ));
+        // No provision script runner without a provision script
+        assert!(!ud.contains("rum-provision.sh"));
     }
 
     #[test]
