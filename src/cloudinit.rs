@@ -1,3 +1,4 @@
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Cursor;
 use std::path::Path;
 use std::sync::Arc;
@@ -7,6 +8,15 @@ use hadris_iso::write::options::{CreationFeatures, FormatOptions};
 use hadris_iso::write::{File as IsoFile, InputFiles, IsoImageWriter};
 
 use crate::error::RumError;
+
+/// Compute a short hash of the cloud-init inputs for cache-busting the seed ISO filename.
+pub fn seed_hash(hostname: &str, provision_script: &str, packages: &[String]) -> String {
+    let mut hasher = DefaultHasher::new();
+    hostname.hash(&mut hasher);
+    provision_script.hash(&mut hasher);
+    packages.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
 
 /// Generate a cloud-init NoCloud seed ISO (ISO 9660 with volume label "CIDATA").
 pub async fn generate_seed_iso(
@@ -28,9 +38,6 @@ pub async fn generate_seed_iso(
     let user_data = build_user_data(provision_script, packages);
 
     let iso = build_iso(&meta_data, &user_data)?;
-
-    // Remove existing seed ISO first — it may be owned by root from a previous run
-    let _ = tokio::fs::remove_file(seed_path).await;
 
     tokio::fs::write(seed_path, &iso)
         .await

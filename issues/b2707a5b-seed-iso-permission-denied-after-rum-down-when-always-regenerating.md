@@ -1,6 +1,6 @@
 # seed ISO permission denied after rum down when always regenerating
 
-**ID:** b2707a5b | **Status:** Done | **Created:** 2026-02-14T12:55:34+01:00
+**ID:** b2707a5b | **Status:** Done (superseded by e876d216) | **Created:** 2026-02-14T12:55:34+01:00
 
 ## Summary
 

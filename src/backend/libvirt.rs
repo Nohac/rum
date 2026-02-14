@@ -32,7 +32,12 @@ impl super::Backend for LibvirtBackend {
         let name = &config.name;
         let work = paths::work_dir(name);
         let overlay_path = paths::overlay_path(name);
-        let seed_path = paths::seed_path(name);
+        let seed_hash = cloudinit::seed_hash(
+            config.hostname(),
+            &config.provision.script,
+            &config.provision.packages,
+        );
+        let seed_path = paths::seed_path(name, &seed_hash);
         let xml_path = paths::domain_xml_path(name);
         let cache = paths::cache_dir();
 
@@ -58,15 +63,28 @@ impl super::Backend for LibvirtBackend {
             overlay::create_overlay(&base, &overlay_path).await?;
         }
 
-        // 3. Generate seed ISO (always regenerate to pick up config changes)
-        println!("Generating cloud-init seed...");
-        cloudinit::generate_seed_iso(
-            &seed_path,
-            config.hostname(),
-            &config.provision.script,
-            &config.provision.packages,
-        )
-        .await?;
+        // 3. Generate seed ISO if inputs changed (hash-keyed filename)
+        if !seed_path.exists() {
+            println!("Generating cloud-init seed...");
+            // Remove old seed ISOs with different hashes
+            if let Ok(mut entries) = tokio::fs::read_dir(&work).await {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let name = entry.file_name();
+                    if let Some(s) = name.to_str() {
+                        if s.starts_with("seed-") && s.ends_with(".iso") {
+                            let _ = tokio::fs::remove_file(entry.path()).await;
+                        }
+                    }
+                }
+            }
+            cloudinit::generate_seed_iso(
+                &seed_path,
+                config.hostname(),
+                &config.provision.script,
+                &config.provision.packages,
+            )
+            .await?;
+        }
 
         // 4. Generate domain XML
         let xml = domain_xml::generate_domain_xml(config, &overlay_path, &seed_path);

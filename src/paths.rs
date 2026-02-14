@@ -21,9 +21,9 @@ pub fn overlay_path(name: &str) -> PathBuf {
     work_dir(name).join("overlay.qcow2")
 }
 
-/// Path to the cloud-init seed ISO for a VM.
-pub fn seed_path(name: &str) -> PathBuf {
-    work_dir(name).join("seed.iso")
+/// Path to the cloud-init seed ISO for a VM, keyed by content hash.
+pub fn seed_path(name: &str, hash: &str) -> PathBuf {
+    work_dir(name).join(format!("seed-{hash}.iso"))
 }
 
 /// Path to the saved domain XML for a VM.
