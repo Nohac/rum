@@ -29,6 +29,9 @@ pub async fn generate_seed_iso(
 
     let iso = build_iso(&meta_data, &user_data)?;
 
+    // Remove existing seed ISO first — it may be owned by root from a previous run
+    let _ = tokio::fs::remove_file(seed_path).await;
+
     tokio::fs::write(seed_path, &iso)
         .await
         .map_err(|e| RumError::Io {
