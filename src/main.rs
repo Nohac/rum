@@ -21,18 +21,20 @@ async fn main() -> miette::Result<()> {
     let backend = backend::create_backend();
 
     match cli.command {
-        Command::Up { reset } => backend.up(&config, reset).await?,
+        Command::Up { reset } => backend.up(&config, &cli.config, reset).await?,
         Command::Down => backend.down(&config).await?,
         Command::Destroy { purge } => backend.destroy(&config, purge).await?,
         Command::Status => backend.status(&config).await?,
         Command::DumpIso { dir } => {
             use rum::cloudinit;
+            let mounts = config.resolve_mounts(&cli.config)?;
             let seed_path = dir.join("seed.iso");
             cloudinit::generate_seed_iso(
                 &seed_path,
                 config.hostname(),
                 &config.provision.script,
                 &config.provision.packages,
+                &mounts,
             )
             .await?;
             println!("Wrote seed ISO to {}", seed_path.display());

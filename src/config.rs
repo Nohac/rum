@@ -1,7 +1,26 @@
 use facet::Facet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::RumError;
+
+#[derive(Debug, Clone, Default, Facet)]
+#[facet(default)]
+pub struct MountConfig {
+    pub source: String,
+    pub target: String,
+    #[facet(default)]
+    pub readonly: bool,
+    #[facet(default)]
+    pub tag: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedMount {
+    pub source: PathBuf,
+    pub target: String,
+    pub readonly: bool,
+    pub tag: String,
+}
 
 #[derive(Debug, Clone, Facet)]
 pub struct Config {
@@ -14,6 +33,8 @@ pub struct Config {
     pub provision: ProvisionConfig,
     #[facet(default)]
     pub advanced: AdvancedConfig,
+    #[facet(default)]
+    pub mounts: Vec<MountConfig>,
 }
 
 #[derive(Debug, Clone, Facet)]
@@ -118,8 +139,116 @@ impl Config {
                 message: "memory_mb must be at least 256".into(),
             });
         }
+
+        // Validate mounts
+        for m in &self.mounts {
+            if !m.target.starts_with('/') {
+                return Err(RumError::Validation {
+                    message: format!("mount target must be absolute (got '{}')", m.target),
+                });
+            }
+        }
+
+        // Check for duplicate tags (after auto-generation would apply, but we
+        // can at least check explicitly set tags here)
+        let explicit_tags: Vec<&str> = self
+            .mounts
+            .iter()
+            .filter(|m| !m.tag.is_empty())
+            .map(|m| m.tag.as_str())
+            .collect();
+        for (i, tag) in explicit_tags.iter().enumerate() {
+            if explicit_tags[i + 1..].contains(tag) {
+                return Err(RumError::Validation {
+                    message: format!("duplicate mount tag '{tag}'"),
+                });
+            }
+        }
+
         Ok(())
     }
+
+    /// Resolve mount sources relative to the config file path.
+    pub fn resolve_mounts(&self, config_path: &Path) -> Result<Vec<ResolvedMount>, RumError> {
+        let parent = config_path.parent().unwrap_or(Path::new("."));
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        let config_dir = parent.canonicalize().map_err(|e| RumError::Io {
+            context: format!("canonicalizing config dir {}", parent.display()),
+            source: e,
+        })?;
+
+        let mut resolved = Vec::new();
+        let mut seen_tags = std::collections::HashSet::new();
+
+        for m in &self.mounts {
+            let source = match m.source.as_str() {
+                "." => config_dir.clone(),
+                "git" => {
+                    let output = std::process::Command::new("git")
+                        .args(["rev-parse", "--show-toplevel"])
+                        .current_dir(&config_dir)
+                        .output()
+                        .map_err(|e| RumError::GitRepoDetection {
+                            message: format!("failed to run git: {e}"),
+                        })?;
+                    if !output.status.success() {
+                        return Err(RumError::GitRepoDetection {
+                            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                        });
+                    }
+                    PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
+                }
+                other => {
+                    let p = Path::new(other);
+                    if p.is_absolute() {
+                        p.to_path_buf()
+                    } else {
+                        config_dir.join(p)
+                    }
+                }
+            };
+
+            if !source.is_dir() {
+                return Err(RumError::MountSourceNotFound {
+                    path: source.display().to_string(),
+                });
+            }
+
+            let tag = if m.tag.is_empty() {
+                sanitize_tag(&m.target)
+            } else {
+                m.tag.clone()
+            };
+
+            if !seen_tags.insert(tag.clone()) {
+                return Err(RumError::Validation {
+                    message: format!("duplicate mount tag '{tag}'"),
+                });
+            }
+
+            resolved.push(ResolvedMount {
+                source,
+                target: m.target.clone(),
+                readonly: m.readonly,
+                tag,
+            });
+        }
+
+        Ok(resolved)
+    }
+}
+
+/// Generate a filesystem tag from a mount target path.
+/// E.g. `/mnt/project` → `mnt_project`
+fn sanitize_tag(target: &str) -> String {
+    target
+        .replace('/', "_")
+        .trim_start_matches('_')
+        .to_string()
 }
 
 pub fn load_config(path: &Path) -> Result<Config, RumError> {
@@ -154,6 +283,7 @@ mod tests {
             network: NetworkConfig::default(),
             provision: ProvisionConfig::default(),
             advanced: AdvancedConfig::default(),
+            mounts: vec![],
         }
     }
 

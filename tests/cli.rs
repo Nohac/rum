@@ -133,3 +133,41 @@ libvirt_uri = "qemu:///session"
         .success()
         .stdout(predicate::str::contains("not defined"));
 }
+
+#[test]
+fn config_with_mounts_section() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("rum.toml");
+    let mut f = std::fs::File::create(&config_path).unwrap();
+    write!(
+        f,
+        r#"
+name = "mount-vm"
+
+[image]
+base = "ubuntu-24.04"
+
+[resources]
+cpus = 2
+memory_mb = 2048
+
+[[mounts]]
+source = "."
+target = "/mnt/project"
+
+[[mounts]]
+source = "."
+target = "/mnt/data"
+readonly = true
+tag = "data"
+"#
+    )
+    .unwrap();
+
+    // Should parse without error — status reports "not defined" for nonexistent VM
+    rum()
+        .args(["--config", config_path.to_str().unwrap(), "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not defined"));
+}

@@ -1,11 +1,13 @@
 pub mod libvirt;
 
+use std::path::Path;
+
 use crate::config::Config;
 use crate::error::RumError;
 
 #[allow(async_fn_in_trait)] // trait is internal-only
 pub trait Backend {
-    async fn up(&self, config: &Config, reset: bool) -> Result<(), RumError>;
+    async fn up(&self, config: &Config, config_path: &Path, reset: bool) -> Result<(), RumError>;
     async fn down(&self, config: &Config) -> Result<(), RumError>;
     async fn destroy(&self, config: &Config, purge: bool) -> Result<(), RumError>;
     async fn status(&self, config: &Config) -> Result<(), RumError>;

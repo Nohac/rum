@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Stdio;
 
 use indicatif::ProgressBar;
@@ -28,14 +29,30 @@ impl Drop for ConnGuard {
 pub struct LibvirtBackend;
 
 impl super::Backend for LibvirtBackend {
-    async fn up(&self, config: &Config, reset: bool) -> Result<(), RumError> {
+    async fn up(&self, config: &Config, config_path: &Path, reset: bool) -> Result<(), RumError> {
         let name = &config.name;
         let work = paths::work_dir(name);
         let overlay_path = paths::overlay_path(name);
+
+        // Resolve mounts early so we fail fast on bad paths
+        let mounts = config.resolve_mounts(config_path)?;
+        if !mounts.is_empty() {
+            for m in &mounts {
+                tracing::info!(
+                    source = %m.source.display(),
+                    target = %m.target,
+                    tag = %m.tag,
+                    readonly = m.readonly,
+                    "virtiofs mount"
+                );
+            }
+        }
+
         let seed_hash = cloudinit::seed_hash(
             config.hostname(),
             &config.provision.script,
             &config.provision.packages,
+            &mounts,
         );
         let seed_path = paths::seed_path(name, &seed_hash);
         let xml_path = paths::domain_xml_path(name);
@@ -82,19 +99,20 @@ impl super::Backend for LibvirtBackend {
                 config.hostname(),
                 &config.provision.script,
                 &config.provision.packages,
+                &mounts,
             )
             .await?;
         }
 
         // 4. Generate domain XML
-        let xml = domain_xml::generate_domain_xml(config, &overlay_path, &seed_path);
+        let xml = domain_xml::generate_domain_xml(config, &overlay_path, &seed_path, &mounts);
 
         // 5. Define or redefine domain
         println!("Configuring VM...");
         let existing = Domain::lookup_by_name(&conn, name);
         match existing {
             Ok(dom) => {
-                if domain_xml::xml_has_changed(config, &overlay_path, &seed_path, &xml_path) {
+                if domain_xml::xml_has_changed(config, &overlay_path, &seed_path, &mounts, &xml_path) {
                     if is_running(&dom) {
                         return Err(RumError::RequiresRestart { name: name.clone() });
                     }

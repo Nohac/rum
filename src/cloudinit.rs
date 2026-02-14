@@ -3,15 +3,26 @@ use std::path::Path;
 
 use facet_value::{VArray, Value, value};
 
+use crate::config::ResolvedMount;
 use crate::error::RumError;
 use crate::iso9660::{self, IsoFile};
 
 /// Compute a short hash of the cloud-init inputs for cache-busting the seed ISO filename.
-pub fn seed_hash(hostname: &str, provision_script: &str, packages: &[String]) -> String {
+pub fn seed_hash(
+    hostname: &str,
+    provision_script: &str,
+    packages: &[String],
+    mounts: &[ResolvedMount],
+) -> String {
     let mut hasher = DefaultHasher::new();
     hostname.hash(&mut hasher);
     provision_script.hash(&mut hasher);
     packages.hash(&mut hasher);
+    for m in mounts {
+        m.tag.hash(&mut hasher);
+        m.target.hash(&mut hasher);
+        m.readonly.hash(&mut hasher);
+    }
     format!("{:016x}", hasher.finish())
 }
 
@@ -21,6 +32,7 @@ pub async fn generate_seed_iso(
     hostname: &str,
     provision_script: &str,
     packages: &[String],
+    mounts: &[ResolvedMount],
 ) -> Result<(), RumError> {
     if let Some(parent) = seed_path.parent() {
         tokio::fs::create_dir_all(parent)
@@ -32,7 +44,7 @@ pub async fn generate_seed_iso(
     }
 
     let meta_data = format!("instance-id: {hostname}\nlocal-hostname: {hostname}\n");
-    let user_data = build_user_data(provision_script, packages);
+    let user_data = build_user_data(provision_script, packages, mounts);
     // Network config v2 for cloud-init NoCloud datasource.
     // Note: no outer "network:" wrapper — the file IS the network config directly.
     let network_config = "version: 2\nethernets:\n  id0:\n    match:\n      name: \"en*\"\n    dhcp4: true\n";
@@ -60,7 +72,7 @@ ExecStart=
 ExecStart=-/sbin/agetty --autologin rum --noclear --keep-baud 115200,38400,9600 %I $TERM
 ";
 
-fn build_user_data(provision_script: &str, packages: &[String]) -> String {
+fn build_user_data(provision_script: &str, packages: &[String], mounts: &[ResolvedMount]) -> String {
     let user = value!({
         "name": "rum",
         "plain_text_passwd": "rum",
@@ -91,6 +103,15 @@ fn build_user_data(provision_script: &str, packages: &[String]) -> String {
     runcmd.push(value!(["systemctl", "daemon-reload"]));
     runcmd.push(value!(["systemctl", "restart", "serial-getty@ttyS0.service"]));
 
+    // Create mount point directories before cloud-init processes mounts
+    for m in mounts {
+        runcmd.push(Value::from(VArray::from_iter([
+            Value::from("mkdir"),
+            Value::from("-p"),
+            Value::from(m.target.as_str()),
+        ])));
+    }
+
     if !provision_script.is_empty() {
         runcmd.push(value!(["/bin/bash", "/var/lib/cloud/scripts/rum-provision.sh"]));
     }
@@ -100,6 +121,25 @@ fn build_user_data(provision_script: &str, packages: &[String]) -> String {
         "write_files": (Value::from(write_files)),
         "runcmd": (Value::from(runcmd)),
     });
+
+    // Add virtiofs mount entries
+    if !mounts.is_empty() {
+        let mut mount_entries = VArray::new();
+        for m in mounts {
+            let entry = VArray::from_iter([
+                Value::from(m.tag.as_str()),
+                Value::from(m.target.as_str()),
+                Value::from("virtiofs"),
+                Value::from("defaults,nofail"),
+                Value::from("0"),
+                Value::from("0"),
+            ]);
+            mount_entries.push(Value::from(entry));
+        }
+        if let Some(obj) = config.as_object_mut() {
+            obj.insert("mounts", Value::from(mount_entries));
+        }
+    }
 
     if !packages.is_empty() {
         let mut pkg_array = VArray::new();
@@ -125,20 +165,20 @@ mod tests {
 
     #[test]
     fn user_data_is_valid_cloud_config() {
-        let ud = build_user_data("", &[]);
+        let ud = build_user_data("", &[], &[]);
         assert!(ud.starts_with("#cloud-config\n"));
     }
 
     #[test]
     fn user_data_contains_user() {
-        let ud = build_user_data("", &[]);
+        let ud = build_user_data("", &[], &[]);
         assert!(ud.contains("name: rum"));
         assert!(ud.contains("lock_passwd: false"));
     }
 
     #[test]
     fn user_data_contains_packages() {
-        let ud = build_user_data("", &["curl".into(), "git".into()]);
+        let ud = build_user_data("", &["curl".into(), "git".into()], &[]);
         assert!(ud.contains("packages:"));
         assert!(ud.contains("curl"));
         assert!(ud.contains("git"));
@@ -146,14 +186,14 @@ mod tests {
 
     #[test]
     fn user_data_yaml_special_chars_in_packages() {
-        let ud = build_user_data("", &["foo: bar".into()]);
+        let ud = build_user_data("", &["foo: bar".into()], &[]);
         // YAML serializer should quote or escape the colon
         assert!(ud.contains("foo: bar") || ud.contains("'foo: bar'") || ud.contains("\"foo: bar\""));
     }
 
     #[test]
     fn user_data_autologin_dropin() {
-        let ud = build_user_data("", &[]);
+        let ud = build_user_data("", &[], &[]);
         assert!(ud.contains("autologin.conf"));
         assert!(ud.contains("--autologin rum"));
         assert!(ud.contains("--keep-baud 115200,38400,9600"));
@@ -161,7 +201,7 @@ mod tests {
 
     #[test]
     fn user_data_runcmd_restarts_getty() {
-        let ud = build_user_data("", &[]);
+        let ud = build_user_data("", &[], &[]);
         assert!(ud.contains("runcmd:"));
         assert!(ud.contains("daemon-reload"));
         assert!(ud.contains("serial-getty@ttyS0.service"));
@@ -169,7 +209,7 @@ mod tests {
 
     #[test]
     fn user_data_provision_script() {
-        let ud = build_user_data("echo hello\necho world", &[]);
+        let ud = build_user_data("echo hello\necho world", &[], &[]);
         assert!(ud.contains("rum-provision.sh"));
         assert!(ud.contains("echo hello"));
         assert!(ud.contains("echo world"));
@@ -178,7 +218,25 @@ mod tests {
 
     #[test]
     fn user_data_runcmd_includes_provision_script() {
-        let ud = build_user_data("echo hello", &[]);
+        let ud = build_user_data("echo hello", &[], &[]);
         assert!(ud.contains("rum-provision.sh"));
+    }
+
+    #[test]
+    fn user_data_contains_virtiofs_mounts() {
+        let mounts = vec![ResolvedMount {
+            source: std::path::PathBuf::from("/home/user/project"),
+            target: "/mnt/project".into(),
+            readonly: false,
+            tag: "mnt_project".into(),
+        }];
+        let ud = build_user_data("", &[], &mounts);
+        assert!(ud.contains("mounts:"));
+        assert!(ud.contains("mnt_project"));
+        assert!(ud.contains("/mnt/project"));
+        assert!(ud.contains("virtiofs"));
+        assert!(ud.contains("nofail"));
+        // Should also have mkdir in runcmd
+        assert!(ud.contains("mkdir"));
     }
 }
