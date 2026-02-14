@@ -25,7 +25,7 @@ cargo fmt              # format code
 - `qemu-img` (runtime, for overlay creation)
 - `libvirt` + KVM (runtime)
 
-No external tools needed for cloud-init ISO generation (uses `hadris-iso` crate).
+No external tools needed for cloud-init ISO generation (pure Rust `iso9660` module).
 
 ## Libraries
 
@@ -36,7 +36,7 @@ No external tools needed for cloud-init ISO generation (uses `hadris-iso` crate)
 - **Progress/busy indicators**: `indicatif`
 - **Libvirt bindings**: `virt` crate (links against libvirt C library)
 - **Image download**: `reqwest` with streaming + `futures-util`
-- **ISO generation**: `hadris-iso` (pure Rust ISO 9660, no external tools)
+- **ISO generation**: `src/iso9660.rs` (minimal pure Rust ISO 9660 + Rock Ridge)
 - **Path helpers**: `dirs` (XDG directories)
 
 ## Architecture
@@ -49,7 +49,8 @@ Rust 2024 edition. Code is split into focused modules — avoid monolithic files
 - **`src/paths.rs`** — XDG path helpers (`~/.cache/rum/images/`, `~/.local/share/rum/<name>/`)
 - **`src/image.rs`** — Base image download/caching with reqwest streaming + indicatif progress bar
 - **`src/overlay.rs`** — qcow2 overlay creation (shells out to `qemu-img`)
-- **`src/cloudinit.rs`** — NoCloud seed ISO generation via `hadris-iso` (FAT or ISO 9660 with volume label "CIDATA"). Creates default `rum` user with password `rum`.
+- **`src/cloudinit.rs`** — NoCloud seed ISO generation (ISO 9660 with volume label "CIDATA"). Creates default `rum` user with password `rum`.
+- **`src/iso9660.rs`** — Minimal pure-Rust ISO 9660 generator with Rock Ridge extensions (SUSP/RRIP). Supports flat file layout only — exactly what cloud-init seed images need.
 - **`src/domain_xml.rs`** — Libvirt domain XML generation from config (KVM, virtio disk, SATA CDROM, NAT network, serial console)
 - **`src/backend/mod.rs`** — `Backend` trait with async methods (up, down, destroy, status)
 - **`src/backend/libvirt.rs`** — Full libvirt implementation: image download, overlay/seed creation, domain define/redefine/start, serial console via `virsh console`, ACPI shutdown with timeout, destroy with purge, auto-starts default network if inactive
@@ -76,6 +77,26 @@ Rust 2024 edition. Code is split into focused modules — avoid monolithic files
 - `--reset` flag wipes overlay + seed to force fresh first boot
 - `rum up` attaches serial console via `virsh console` after boot
 - Default network is auto-started if defined but inactive
+
+## Git Workflow
+
+- Keep a **linear history** — no merge commits
+- Use `git cherry-pick` to integrate feature branches onto main (preferred over merge)
+- Rebase feature branches onto `main` before merging if they've diverged
+- One focused commit per fix/feature with a conventional commit message (e.g. `fix:`, `feat:`, `chore:`)
+
+## Parallel Worktree Workflow
+
+For batching multiple fixes, use git worktrees with parallel agents:
+
+1. **Group issues by file overlap** — issues touching the same files go in the same batch (sequential), non-overlapping issues run in parallel
+2. **Create worktrees**: `git -C rum worktree add ../wN -b fix/issue-slug`
+3. **Launch `general-purpose` agents** (NOT `Bash` agents — those lack Write/Edit tools). Each agent makes changes, runs `cargo build && cargo test`, and updates the issue status. Agents must NOT run git commands — commit from the main context
+4. **Commit from main context** after agents complete
+5. **Cherry-pick onto main**: `git cherry-pick <hash>` for linear history. Resolve conflicts manually if branches touch the same files
+6. **Reuse worktrees** between batches — switch branches with `git checkout -b fix/next-issue main` rather than removing/recreating
+7. **Commit new issue files before launching agents** so worktrees have access to them
+8. **Verify after each batch**: `cargo build && cargo test && cargo clippy` on main
 
 ## Issues
 
