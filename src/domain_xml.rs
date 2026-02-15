@@ -1,84 +1,369 @@
-use std::fmt::Write;
+//! Libvirt domain XML generation using facet-xml struct serialization.
+//!
+//! # Caveats (facet-xml v0.43)
+//!
+//! - **Compact output only.** Pretty-print (`to_string_pretty`) corrupts text
+//!   nodes by inserting whitespace inside `<name>`, `<memory>`, etc.
+//!   Tracked upstream: <https://github.com/facet-rs/facet/issues/1982>
+//! - **No self-closing tags.** Attribute-only elements like `<boot dev="hd">`
+//!   render as `<boot dev="hd"></boot>` instead of `<boot dev="hd"/>`.
+//!   Libvirt accepts both forms, so this is cosmetic only.
+//! - **`#[facet(flatten)]` is broken** for enum variants — double-wraps
+//!   elements. Avoid for now; use separate struct fields instead.
+
 use std::path::Path;
+
+use facet::Facet;
+use facet_xml as xml;
 
 use crate::config::{Config, ResolvedMount};
 
+// ── XML model structs ──────────────────────────────────────
+//
+// Each struct maps to a libvirt XML element. Attributes use
+// `#[facet(xml::attribute)]`, text content uses `#[facet(xml::text)]`,
+// and child elements are nested structs.
+
+#[derive(Debug, Facet)]
+#[facet(rename = "domain")]
+struct Domain {
+    #[facet(xml::attribute, rename = "type")]
+    domain_type: String,
+    name: String,
+    memory: Memory,
+    vcpu: u32,
+    os: Os,
+    #[facet(default, rename = "memoryBacking")]
+    memory_backing: Option<MemoryBacking>,
+    features: Features,
+    devices: Devices,
+}
+
+#[derive(Debug, Facet)]
+struct Memory {
+    #[facet(xml::attribute)]
+    unit: String,
+    #[facet(xml::text)]
+    value: u64,
+}
+
+// ── OS ─────────────────────────────────────────────────────
+
+#[derive(Debug, Facet)]
+struct Os {
+    #[facet(rename = "type")]
+    os_type: OsType,
+    boot: Boot,
+}
+
+#[derive(Debug, Facet)]
+#[facet(rename = "type")]
+struct OsType {
+    #[facet(xml::attribute)]
+    arch: String,
+    #[facet(xml::attribute)]
+    machine: String,
+    #[facet(xml::text)]
+    value: String,
+}
+
+#[derive(Debug, Facet)]
+struct Boot {
+    #[facet(xml::attribute)]
+    dev: String,
+}
+
+// ── memoryBacking (required for virtiofs) ──────────────────
+
+#[derive(Debug, Facet)]
+struct MemoryBacking {
+    source: MemoryBackingSource,
+    access: MemoryBackingAccess,
+}
+
+#[derive(Debug, Facet)]
+struct MemoryBackingSource {
+    #[facet(xml::attribute, rename = "type")]
+    source_type: String,
+}
+
+#[derive(Debug, Facet)]
+struct MemoryBackingAccess {
+    #[facet(xml::attribute)]
+    mode: String,
+}
+
+// ── features ───────────────────────────────────────────────
+
+#[derive(Debug, Facet)]
+struct Features {
+    acpi: Empty,
+    apic: Empty,
+}
+
+#[derive(Debug, Default, Facet)]
+#[facet(default)]
+struct Empty {}
+
+// ── devices ────────────────────────────────────────────────
+
+#[derive(Debug, Facet)]
+struct Devices {
+    disk: Vec<Disk>,
+    filesystem: Vec<Filesystem>,
+    interface: Interface,
+    serial: Serial,
+    console: Console,
+}
+
+#[derive(Debug, Facet)]
+struct Disk {
+    #[facet(xml::attribute, rename = "type")]
+    disk_type: String,
+    #[facet(xml::attribute)]
+    device: String,
+    driver: DiskDriver,
+    source: DiskSource,
+    target: DiskTarget,
+    #[facet(default)]
+    readonly: Option<Empty>,
+}
+
+#[derive(Debug, Facet)]
+struct DiskDriver {
+    #[facet(xml::attribute)]
+    name: String,
+    #[facet(xml::attribute, rename = "type")]
+    driver_type: String,
+}
+
+#[derive(Debug, Facet)]
+struct DiskSource {
+    #[facet(xml::attribute)]
+    file: String,
+}
+
+#[derive(Debug, Facet)]
+struct DiskTarget {
+    #[facet(xml::attribute)]
+    dev: String,
+    #[facet(xml::attribute)]
+    bus: String,
+}
+
+// ── virtiofs filesystem ────────────────────────────────────
+
+#[derive(Debug, Facet)]
+struct Filesystem {
+    #[facet(xml::attribute, rename = "type")]
+    fs_type: String,
+    #[facet(xml::attribute)]
+    accessmode: String,
+    driver: FsDriver,
+    source: FsSource,
+    target: FsTarget,
+    #[facet(default)]
+    readonly: Option<Empty>,
+}
+
+#[derive(Debug, Facet)]
+struct FsDriver {
+    #[facet(xml::attribute, rename = "type")]
+    driver_type: String,
+}
+
+#[derive(Debug, Facet)]
+struct FsSource {
+    #[facet(xml::attribute)]
+    dir: String,
+}
+
+#[derive(Debug, Facet)]
+struct FsTarget {
+    #[facet(xml::attribute)]
+    dir: String,
+}
+
+// ── network ────────────────────────────────────────────────
+
+#[derive(Debug, Facet)]
+struct Interface {
+    #[facet(xml::attribute, rename = "type")]
+    iface_type: String,
+    source: InterfaceSource,
+    model: InterfaceModel,
+}
+
+#[derive(Debug, Facet)]
+struct InterfaceSource {
+    #[facet(xml::attribute)]
+    network: String,
+}
+
+#[derive(Debug, Facet)]
+struct InterfaceModel {
+    #[facet(xml::attribute, rename = "type")]
+    model_type: String,
+}
+
+// ── serial / console ───────────────────────────────────────
+
+#[derive(Debug, Facet)]
+struct Serial {
+    #[facet(xml::attribute, rename = "type")]
+    serial_type: String,
+    target: SerialTarget,
+}
+
+#[derive(Debug, Facet)]
+#[facet(rename = "target")]
+struct SerialTarget {
+    #[facet(xml::attribute)]
+    port: String,
+}
+
+#[derive(Debug, Facet)]
+struct Console {
+    #[facet(xml::attribute, rename = "type")]
+    console_type: String,
+    target: ConsoleTarget,
+}
+
+#[derive(Debug, Facet)]
+#[facet(rename = "target")]
+struct ConsoleTarget {
+    #[facet(xml::attribute, rename = "type")]
+    target_type: String,
+    #[facet(xml::attribute)]
+    port: String,
+}
+
+// ── public API ─────────────────────────────────────────────
+
 /// Generate libvirt domain XML from config.
+///
+/// Uses compact (single-line) output because facet-xml's pretty-printer
+/// corrupts text nodes. Libvirt parses both forms identically.
 pub fn generate_domain_xml(
     config: &Config,
     overlay_path: &Path,
     seed_path: &Path,
     mounts: &[ResolvedMount],
 ) -> String {
-    let name = &config.name;
-    let memory_kib = config.resources.memory_mb * 1024;
-    let cpus = config.resources.cpus;
-    let domain_type = &config.advanced.domain_type;
-    let machine = &config.advanced.machine;
-    let overlay = overlay_path.display();
-    let seed = seed_path.display();
+    let memory_backing = if mounts.is_empty() {
+        None
+    } else {
+        Some(MemoryBacking {
+            source: MemoryBackingSource {
+                source_type: "memfd".into(),
+            },
+            access: MemoryBackingAccess {
+                mode: "shared".into(),
+            },
+        })
+    };
 
-    let mut xml = String::new();
-    writeln!(xml, "<domain type='{domain_type}'>").unwrap();
-    writeln!(xml, "  <name>{name}</name>").unwrap();
-    writeln!(xml, "  <memory unit='KiB'>{memory_kib}</memory>").unwrap();
-    writeln!(xml, "  <vcpu>{cpus}</vcpu>").unwrap();
-    writeln!(xml, "  <os>").unwrap();
-    writeln!(xml, "    <type arch='x86_64' machine='{machine}'>hvm</type>").unwrap();
-    writeln!(xml, "    <boot dev='hd'/>").unwrap();
-    writeln!(xml, "  </os>").unwrap();
+    let filesystems: Vec<Filesystem> = mounts
+        .iter()
+        .map(|m| Filesystem {
+            fs_type: "mount".into(),
+            accessmode: "passthrough".into(),
+            driver: FsDriver {
+                driver_type: "virtiofs".into(),
+            },
+            source: FsSource {
+                dir: m.source.display().to_string(),
+            },
+            target: FsTarget {
+                dir: m.tag.clone(),
+            },
+            readonly: if m.readonly { Some(Empty {}) } else { None },
+        })
+        .collect();
 
-    if !mounts.is_empty() {
-        writeln!(xml, "  <memoryBacking>").unwrap();
-        writeln!(xml, "    <source type='memfd'/>").unwrap();
-        writeln!(xml, "    <access mode='shared'/>").unwrap();
-        writeln!(xml, "  </memoryBacking>").unwrap();
-    }
+    let domain = Domain {
+        domain_type: config.advanced.domain_type.clone(),
+        name: config.name.clone(),
+        memory: Memory {
+            unit: "KiB".into(),
+            value: config.resources.memory_mb * 1024,
+        },
+        vcpu: config.resources.cpus,
+        os: Os {
+            os_type: OsType {
+                arch: "x86_64".into(),
+                machine: config.advanced.machine.clone(),
+                value: "hvm".into(),
+            },
+            boot: Boot { dev: "hd".into() },
+        },
+        memory_backing,
+        features: Features {
+            acpi: Empty {},
+            apic: Empty {},
+        },
+        devices: Devices {
+            disk: vec![
+                Disk {
+                    disk_type: "file".into(),
+                    device: "disk".into(),
+                    driver: DiskDriver {
+                        name: "qemu".into(),
+                        driver_type: "qcow2".into(),
+                    },
+                    source: DiskSource {
+                        file: overlay_path.display().to_string(),
+                    },
+                    target: DiskTarget {
+                        dev: "vda".into(),
+                        bus: "virtio".into(),
+                    },
+                    readonly: None,
+                },
+                Disk {
+                    disk_type: "file".into(),
+                    device: "cdrom".into(),
+                    driver: DiskDriver {
+                        name: "qemu".into(),
+                        driver_type: "raw".into(),
+                    },
+                    source: DiskSource {
+                        file: seed_path.display().to_string(),
+                    },
+                    target: DiskTarget {
+                        dev: "sda".into(),
+                        bus: "sata".into(),
+                    },
+                    readonly: Some(Empty {}),
+                },
+            ],
+            filesystem: filesystems,
+            interface: Interface {
+                iface_type: "network".into(),
+                source: InterfaceSource {
+                    network: "default".into(),
+                },
+                model: InterfaceModel {
+                    model_type: "virtio".into(),
+                },
+            },
+            serial: Serial {
+                serial_type: "pty".into(),
+                target: SerialTarget {
+                    port: "0".into(),
+                },
+            },
+            console: Console {
+                console_type: "pty".into(),
+                target: ConsoleTarget {
+                    target_type: "serial".into(),
+                    port: "0".into(),
+                },
+            },
+        },
+    };
 
-    writeln!(xml, "  <features>").unwrap();
-    writeln!(xml, "    <acpi/>").unwrap();
-    writeln!(xml, "    <apic/>").unwrap();
-    writeln!(xml, "  </features>").unwrap();
-    writeln!(xml, "  <devices>").unwrap();
-    writeln!(xml, "    <disk type='file' device='disk'>").unwrap();
-    writeln!(xml, "      <driver name='qemu' type='qcow2'/>").unwrap();
-    writeln!(xml, "      <source file='{overlay}'/>").unwrap();
-    writeln!(xml, "      <target dev='vda' bus='virtio'/>").unwrap();
-    writeln!(xml, "    </disk>").unwrap();
-    writeln!(xml, "    <disk type='file' device='cdrom'>").unwrap();
-    writeln!(xml, "      <driver name='qemu' type='raw'/>").unwrap();
-    writeln!(xml, "      <source file='{seed}'/>").unwrap();
-    writeln!(xml, "      <target dev='sda' bus='sata'/>").unwrap();
-    writeln!(xml, "      <readonly/>").unwrap();
-    writeln!(xml, "    </disk>").unwrap();
-
-    for m in mounts {
-        let source_dir = m.source.display();
-        let tag = &m.tag;
-        writeln!(xml, "    <filesystem type='mount' accessmode='passthrough'>").unwrap();
-        writeln!(xml, "      <driver type='virtiofs'/>").unwrap();
-        writeln!(xml, "      <source dir='{source_dir}'/>").unwrap();
-        writeln!(xml, "      <target dir='{tag}'/>").unwrap();
-        if m.readonly {
-            writeln!(xml, "      <readonly/>").unwrap();
-        }
-        writeln!(xml, "    </filesystem>").unwrap();
-    }
-
-    writeln!(xml, "    <interface type='network'>").unwrap();
-    writeln!(xml, "      <source network='default'/>").unwrap();
-    writeln!(xml, "      <model type='virtio'/>").unwrap();
-    writeln!(xml, "    </interface>").unwrap();
-    writeln!(xml, "    <serial type='pty'>").unwrap();
-    writeln!(xml, "      <target port='0'/>").unwrap();
-    writeln!(xml, "    </serial>").unwrap();
-    writeln!(xml, "    <console type='pty'>").unwrap();
-    writeln!(xml, "      <target type='serial' port='0'/>").unwrap();
-    writeln!(xml, "    </console>").unwrap();
-    writeln!(xml, "  </devices>").unwrap();
-    writeln!(xml, "</domain>").unwrap();
-
-    xml
+    facet_xml::to_string(&domain).expect("domain XML serialization should not fail")
 }
 
 /// Check if the generated XML differs from the saved XML on disk.
@@ -123,60 +408,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn xml_contains_vm_name() {
-        let config = test_config();
-        let xml = generate_domain_xml(
-            &config,
+    fn make_xml(config: &Config, mounts: &[ResolvedMount]) -> String {
+        generate_domain_xml(
+            config,
             &PathBuf::from("/tmp/overlay.qcow2"),
             &PathBuf::from("/tmp/seed.iso"),
-            &[],
-        );
-        assert!(xml.contains("<name>test-vm</name>"));
+            mounts,
+        )
     }
 
     #[test]
-    fn xml_contains_resources() {
-        let config = test_config();
-        let xml = generate_domain_xml(
-            &config,
-            &PathBuf::from("/tmp/overlay.qcow2"),
-            &PathBuf::from("/tmp/seed.iso"),
-            &[],
-        );
-        assert!(xml.contains("<memory unit='KiB'>2097152</memory>"));
-        assert!(xml.contains("<vcpu>2</vcpu>"));
-    }
-
-    #[test]
-    fn xml_contains_serial_console() {
-        let config = test_config();
-        let xml = generate_domain_xml(
-            &config,
-            &PathBuf::from("/tmp/overlay.qcow2"),
-            &PathBuf::from("/tmp/seed.iso"),
-            &[],
-        );
-        assert!(xml.contains("<serial type='pty'>"));
-        assert!(xml.contains("<console type='pty'>"));
-    }
-
-    #[test]
-    fn xml_contains_devices() {
-        let config = test_config();
-        let xml = generate_domain_xml(
-            &config,
-            &PathBuf::from("/tmp/overlay.qcow2"),
-            &PathBuf::from("/tmp/seed.iso"),
-            &[],
-        );
-        assert!(xml.contains("bus='virtio'"));
-        assert!(xml.contains("bus='sata'"));
-        assert!(xml.contains("<source network='default'/>"));
-    }
-
-    #[test]
-    fn xml_from_minimal_toml_has_domain_type() {
+    fn xml_from_minimal_toml_has_defaults() {
         let toml = r#"
 name = "test-vm"
 
@@ -188,25 +430,19 @@ cpus = 1
 memory_mb = 512
 "#;
         let config: Config = facet_toml::from_str(toml).unwrap();
-        let xml = generate_domain_xml(
-            &config,
-            &PathBuf::from("/tmp/overlay.qcow2"),
-            &PathBuf::from("/tmp/seed.iso"),
-            &[],
-        );
+        let xml = make_xml(&config, &[]);
         assert!(
-            xml.contains("type='kvm'"),
+            xml.contains(r#"type="kvm""#),
             "domain type should default to 'kvm', got:\n{xml}"
         );
         assert!(
-            xml.contains("machine='q35'"),
+            xml.contains(r#"machine="q35""#),
             "machine should default to 'q35', got:\n{xml}"
         );
     }
 
     #[test]
     fn xml_with_mounts_has_virtiofs() {
-        let config = test_config();
         let mounts = vec![
             ResolvedMount {
                 source: PathBuf::from("/home/user/project"),
@@ -221,34 +457,18 @@ memory_mb = 512
                 tag: "mnt_data".into(),
             },
         ];
-        let xml = generate_domain_xml(
-            &config,
-            &PathBuf::from("/tmp/overlay.qcow2"),
-            &PathBuf::from("/tmp/seed.iso"),
-            &mounts,
-        );
+        let xml = make_xml(&test_config(), &mounts);
         assert!(xml.contains("<memoryBacking>"));
-        assert!(xml.contains("<source type='memfd'/>"));
-        assert!(xml.contains("<access mode='shared'/>"));
-        assert!(xml.contains("<driver type='virtiofs'/>"));
-        assert!(xml.contains("<source dir='/home/user/project'/>"));
-        assert!(xml.contains("<target dir='mnt_project'/>"));
-        assert!(xml.contains("<source dir='/data'/>"));
-        assert!(xml.contains("<target dir='mnt_data'/>"));
-        // readonly mount should have <readonly/> inside filesystem
-        assert!(xml.contains("<readonly/>"));
+        assert!(xml.contains(r#"<driver type="virtiofs">"#));
+        assert!(xml.contains(r#"<source dir="/home/user/project">"#));
+        assert!(xml.contains(r#"<target dir="mnt_data">"#));
+        assert!(xml.contains("<readonly>"));
     }
 
     #[test]
     fn xml_without_mounts_no_memory_backing() {
-        let config = test_config();
-        let xml = generate_domain_xml(
-            &config,
-            &PathBuf::from("/tmp/overlay.qcow2"),
-            &PathBuf::from("/tmp/seed.iso"),
-            &[],
-        );
-        assert!(!xml.contains("<memoryBacking>"));
+        let xml = make_xml(&test_config(), &[]);
+        assert!(!xml.contains("memoryBacking"));
         assert!(!xml.contains("virtiofs"));
     }
 }

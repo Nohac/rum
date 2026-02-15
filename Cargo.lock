@@ -380,6 +380,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "facet-dom"
+version = "0.43.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac14c7d7000cb34d13bfd3fc2be1a210993107f8b730880f31782130b8111e7b"
+dependencies = [
+ "facet-core",
+ "facet-dessert",
+ "facet-reflect",
+ "facet-singularize",
+ "heck",
+ "owo-colors",
+]
+
+[[package]]
 name = "facet-format"
 version = "0.43.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -456,6 +470,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "facet-singularize"
+version = "0.43.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35e45f9dddda79253419a85cf3fec7571d66a9a958b3cbde68a7a89b5f98f526"
+
+[[package]]
 name = "facet-solver"
 version = "0.43.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -487,6 +507,19 @@ dependencies = [
  "facet-format",
  "facet-reflect",
  "indexmap",
+]
+
+[[package]]
+name = "facet-xml"
+version = "0.43.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e29a1537d7eb616fdf7f9a765292ed18828367d143ada768b285a5fd96f1250f"
+dependencies = [
+ "facet",
+ "facet-core",
+ "facet-dom",
+ "facet-reflect",
+ "quick-xml",
 ]
 
 [[package]]
@@ -1391,6 +1424,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick-xml"
+version = "0.39.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2e3bf4aa9d243beeb01a7b3bc30b77cfe2c44e24ec02d751a7104a53c2c49a1"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1521,6 +1563,7 @@ dependencies = [
  "facet",
  "facet-toml",
  "facet-value",
+ "facet-xml",
  "facet-yaml",
  "futures-util",
  "indicatif",
