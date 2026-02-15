@@ -10,3 +10,4 @@ pub mod image;
 pub mod iso9660;
 pub mod overlay;
 pub mod paths;
+pub mod qcow2;

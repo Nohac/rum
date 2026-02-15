@@ -1,7 +1,10 @@
-use facet::Facet;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use facet::Facet;
+
 use crate::error::RumError;
+use crate::paths;
 
 #[derive(Debug, Clone, Default, Facet)]
 #[facet(default)]
@@ -22,6 +25,23 @@ pub struct ResolvedMount {
     pub tag: String,
 }
 
+#[derive(Debug, Clone, Default, Facet)]
+#[facet(default)]
+pub struct DriveConfig {
+    pub size: String,
+    #[facet(default)]
+    pub target: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedDrive {
+    pub name: String,
+    pub size: String,
+    pub path: PathBuf,
+    pub target: Option<String>,
+    pub dev: String,
+}
+
 #[derive(Debug, Clone, Facet)]
 pub struct Config {
     pub name: String,
@@ -35,6 +55,8 @@ pub struct Config {
     pub advanced: AdvancedConfig,
     #[facet(default)]
     pub mounts: Vec<MountConfig>,
+    #[facet(default)]
+    pub drives: BTreeMap<String, DriveConfig>,
 }
 
 #[derive(Debug, Clone, Facet)]
@@ -165,7 +187,48 @@ impl Config {
             }
         }
 
+        // Validate drives
+        for (name, drive) in &self.drives {
+            if drive.size.is_empty() {
+                return Err(RumError::Validation {
+                    message: format!("drive '{name}' must have a size"),
+                });
+            }
+            if !drive.target.is_empty() && !drive.target.starts_with('/') {
+                return Err(RumError::Validation {
+                    message: format!(
+                        "drive '{name}' target must be absolute (got '{}')",
+                        drive.target
+                    ),
+                });
+            }
+        }
+
         Ok(())
+    }
+
+    /// Resolve drive configs into paths and device names.
+    ///
+    /// BTreeMap iteration is sorted by key, so device names are assigned
+    /// in alphabetical order of drive names: first drive → vdb, second → vdc, etc.
+    /// (vda is reserved for the root overlay disk.)
+    pub fn resolve_drives(&self) -> Result<Vec<ResolvedDrive>, RumError> {
+        let mut resolved = Vec::new();
+        for (i, (name, drive)) in self.drives.iter().enumerate() {
+            let dev = format!("vd{}", (b'b' + i as u8) as char);
+            resolved.push(ResolvedDrive {
+                name: name.clone(),
+                size: drive.size.clone(),
+                path: paths::drive_path(&self.name, name),
+                target: if drive.target.is_empty() {
+                    None
+                } else {
+                    Some(drive.target.clone())
+                },
+                dev,
+            });
+        }
+        Ok(resolved)
     }
 
     /// Resolve mount sources relative to the config file path.
@@ -284,6 +347,7 @@ mod tests {
             provision: ProvisionConfig::default(),
             advanced: AdvancedConfig::default(),
             mounts: vec![],
+            drives: BTreeMap::new(),
         }
     }
 

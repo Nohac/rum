@@ -16,7 +16,7 @@ use std::path::Path;
 use facet::Facet;
 use facet_xml as xml;
 
-use crate::config::{Config, ResolvedMount};
+use crate::config::{Config, ResolvedDrive, ResolvedMount};
 
 // ── XML model structs ──────────────────────────────────────
 //
@@ -249,6 +249,7 @@ pub fn generate_domain_xml(
     overlay_path: &Path,
     seed_path: &Path,
     mounts: &[ResolvedMount],
+    drives: &[ResolvedDrive],
 ) -> String {
     let memory_backing = if mounts.is_empty() {
         None
@@ -281,6 +282,61 @@ pub fn generate_domain_xml(
         })
         .collect();
 
+    let mut disks = vec![
+        Disk {
+            disk_type: "file".into(),
+            device: "disk".into(),
+            driver: DiskDriver {
+                name: "qemu".into(),
+                driver_type: "qcow2".into(),
+            },
+            source: DiskSource {
+                file: overlay_path.display().to_string(),
+            },
+            target: DiskTarget {
+                dev: "vda".into(),
+                bus: "virtio".into(),
+            },
+            readonly: None,
+        },
+        Disk {
+            disk_type: "file".into(),
+            device: "cdrom".into(),
+            driver: DiskDriver {
+                name: "qemu".into(),
+                driver_type: "raw".into(),
+            },
+            source: DiskSource {
+                file: seed_path.display().to_string(),
+            },
+            target: DiskTarget {
+                dev: "sda".into(),
+                bus: "sata".into(),
+            },
+            readonly: Some(Empty {}),
+        },
+    ];
+
+    // Extra drives (vdb, vdc, ...) from [drives] config
+    for drive in drives {
+        disks.push(Disk {
+            disk_type: "file".into(),
+            device: "disk".into(),
+            driver: DiskDriver {
+                name: "qemu".into(),
+                driver_type: "qcow2".into(),
+            },
+            source: DiskSource {
+                file: drive.path.display().to_string(),
+            },
+            target: DiskTarget {
+                dev: drive.dev.clone(),
+                bus: "virtio".into(),
+            },
+            readonly: None,
+        });
+    }
+
     let domain = Domain {
         domain_type: config.advanced.domain_type.clone(),
         name: config.name.clone(),
@@ -303,40 +359,7 @@ pub fn generate_domain_xml(
             apic: Empty {},
         },
         devices: Devices {
-            disk: vec![
-                Disk {
-                    disk_type: "file".into(),
-                    device: "disk".into(),
-                    driver: DiskDriver {
-                        name: "qemu".into(),
-                        driver_type: "qcow2".into(),
-                    },
-                    source: DiskSource {
-                        file: overlay_path.display().to_string(),
-                    },
-                    target: DiskTarget {
-                        dev: "vda".into(),
-                        bus: "virtio".into(),
-                    },
-                    readonly: None,
-                },
-                Disk {
-                    disk_type: "file".into(),
-                    device: "cdrom".into(),
-                    driver: DiskDriver {
-                        name: "qemu".into(),
-                        driver_type: "raw".into(),
-                    },
-                    source: DiskSource {
-                        file: seed_path.display().to_string(),
-                    },
-                    target: DiskTarget {
-                        dev: "sda".into(),
-                        bus: "sata".into(),
-                    },
-                    readonly: Some(Empty {}),
-                },
-            ],
+            disk: disks,
             filesystem: filesystems,
             interface: Interface {
                 iface_type: "network".into(),
@@ -372,9 +395,10 @@ pub fn xml_has_changed(
     overlay_path: &Path,
     seed_path: &Path,
     mounts: &[ResolvedMount],
+    drives: &[ResolvedDrive],
     existing_xml_path: &Path,
 ) -> bool {
-    let new_xml = generate_domain_xml(config, overlay_path, seed_path, mounts);
+    let new_xml = generate_domain_xml(config, overlay_path, seed_path, mounts, drives);
     match std::fs::read_to_string(existing_xml_path) {
         Ok(existing) => existing != new_xml,
         Err(_) => true,
@@ -405,15 +429,17 @@ mod tests {
                 machine: "q35".into(),
             },
             mounts: vec![],
+            drives: std::collections::BTreeMap::new(),
         }
     }
 
-    fn make_xml(config: &Config, mounts: &[ResolvedMount]) -> String {
+    fn make_xml(config: &Config, mounts: &[ResolvedMount], drives: &[ResolvedDrive]) -> String {
         generate_domain_xml(
             config,
             &PathBuf::from("/tmp/overlay.qcow2"),
             &PathBuf::from("/tmp/seed.iso"),
             mounts,
+            drives,
         )
     }
 
@@ -430,7 +456,7 @@ cpus = 1
 memory_mb = 512
 "#;
         let config: Config = facet_toml::from_str(toml).unwrap();
-        let xml = make_xml(&config, &[]);
+        let xml = make_xml(&config, &[], &[]);
         assert!(
             xml.contains(r#"type="kvm""#),
             "domain type should default to 'kvm', got:\n{xml}"
@@ -457,7 +483,7 @@ memory_mb = 512
                 tag: "mnt_data".into(),
             },
         ];
-        let xml = make_xml(&test_config(), &mounts);
+        let xml = make_xml(&test_config(), &mounts, &[]);
         assert!(xml.contains("<memoryBacking>"));
         assert!(xml.contains(r#"<driver type="virtiofs">"#));
         assert!(xml.contains(r#"<source dir="/home/user/project">"#));
@@ -467,8 +493,33 @@ memory_mb = 512
 
     #[test]
     fn xml_without_mounts_no_memory_backing() {
-        let xml = make_xml(&test_config(), &[]);
+        let xml = make_xml(&test_config(), &[], &[]);
         assert!(!xml.contains("memoryBacking"));
         assert!(!xml.contains("virtiofs"));
+    }
+
+    #[test]
+    fn xml_with_drives_has_extra_disks() {
+        let drives = vec![
+            ResolvedDrive {
+                name: "data".into(),
+                size: "20G".into(),
+                path: PathBuf::from("/home/user/.local/share/rum/test-vm/drive-data.qcow2"),
+                target: Some("/mnt/data".into()),
+                dev: "vdb".into(),
+            },
+            ResolvedDrive {
+                name: "scratch".into(),
+                size: "50G".into(),
+                path: PathBuf::from("/home/user/.local/share/rum/test-vm/drive-scratch.qcow2"),
+                target: None,
+                dev: "vdc".into(),
+            },
+        ];
+        let xml = make_xml(&test_config(), &[], &drives);
+        assert!(xml.contains(r#"dev="vdb""#));
+        assert!(xml.contains(r#"dev="vdc""#));
+        assert!(xml.contains("drive-data.qcow2"));
+        assert!(xml.contains("drive-scratch.qcow2"));
     }
 }

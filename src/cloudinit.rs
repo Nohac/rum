@@ -3,7 +3,7 @@ use std::path::Path;
 
 use facet_value::{VArray, Value, value};
 
-use crate::config::ResolvedMount;
+use crate::config::{ResolvedDrive, ResolvedMount};
 use crate::error::RumError;
 use crate::iso9660::{self, IsoFile};
 
@@ -13,6 +13,7 @@ pub fn seed_hash(
     provision_script: &str,
     packages: &[String],
     mounts: &[ResolvedMount],
+    drives: &[ResolvedDrive],
 ) -> String {
     let mut hasher = DefaultHasher::new();
     hostname.hash(&mut hasher);
@@ -22,6 +23,10 @@ pub fn seed_hash(
         m.tag.hash(&mut hasher);
         m.target.hash(&mut hasher);
         m.readonly.hash(&mut hasher);
+    }
+    for d in drives {
+        d.name.hash(&mut hasher);
+        d.size.hash(&mut hasher);
     }
     format!("{:016x}", hasher.finish())
 }

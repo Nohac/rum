@@ -9,7 +9,7 @@ use virt::network::Network;
 
 use crate::config::Config;
 use crate::error::RumError;
-use crate::{cloudinit, domain_xml, image, overlay, paths};
+use crate::{cloudinit, domain_xml, image, overlay, paths, qcow2};
 
 struct ConnGuard(Connect);
 
@@ -34,7 +34,7 @@ impl super::Backend for LibvirtBackend {
         let work = paths::work_dir(name);
         let overlay_path = paths::overlay_path(name);
 
-        // Resolve mounts early so we fail fast on bad paths
+        // Resolve mounts and drives early so we fail fast on bad config
         let mounts = config.resolve_mounts(config_path)?;
         if !mounts.is_empty() {
             for m in &mounts {
@@ -48,11 +48,25 @@ impl super::Backend for LibvirtBackend {
             }
         }
 
+        let drives = config.resolve_drives()?;
+        if !drives.is_empty() {
+            for d in &drives {
+                tracing::info!(
+                    name = %d.name,
+                    size = %d.size,
+                    dev = %d.dev,
+                    target = d.target.as_deref().unwrap_or("(none)"),
+                    "extra drive"
+                );
+            }
+        }
+
         let seed_hash = cloudinit::seed_hash(
             config.hostname(),
             &config.provision.script,
             &config.provision.packages,
             &mounts,
+            &drives,
         );
         let seed_path = paths::seed_path(name, &seed_hash);
         let xml_path = paths::domain_xml_path(name);
@@ -80,6 +94,14 @@ impl super::Backend for LibvirtBackend {
             overlay::create_overlay(&base, &overlay_path).await?;
         }
 
+        // 2b. Create extra drive images if absent
+        for d in &drives {
+            if !d.path.exists() {
+                println!("Creating drive '{}'...", d.name);
+                qcow2::create_qcow2(&d.path, &d.size)?;
+            }
+        }
+
         // 3. Generate seed ISO if inputs changed (hash-keyed filename)
         if !seed_path.exists() {
             println!("Generating cloud-init seed...");
@@ -105,14 +127,14 @@ impl super::Backend for LibvirtBackend {
         }
 
         // 4. Generate domain XML
-        let xml = domain_xml::generate_domain_xml(config, &overlay_path, &seed_path, &mounts);
+        let xml = domain_xml::generate_domain_xml(config, &overlay_path, &seed_path, &mounts, &drives);
 
         // 5. Define or redefine domain
         println!("Configuring VM...");
         let existing = Domain::lookup_by_name(&conn, name);
         match existing {
             Ok(dom) => {
-                if domain_xml::xml_has_changed(config, &overlay_path, &seed_path, &mounts, &xml_path) {
+                if domain_xml::xml_has_changed(config, &overlay_path, &seed_path, &mounts, &drives, &xml_path) {
                     if is_running(&dom) {
                         return Err(RumError::RequiresRestart { name: name.clone() });
                     }

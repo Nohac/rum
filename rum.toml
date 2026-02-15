@@ -9,10 +9,14 @@ memory_mb = 2048
 
 [provision]
 script = "echo 'Hello from rum!'"
-packages = ["curl"]
+packages = ["curl", "inotify-tools"]
 
 [[mounts]]
 source = "."              # "." = rum.toml dir, "git" = repo root, or absolute path
 target = "/mnt/project"
 readonly = false           # default: false
 tag = "project"            # default: auto-generated from target
+
+[drives.data]
+size = "10G"
+target = "/mnt/data"       # optional: for future auto-mount

@@ -1,32 +1,28 @@
 # Extra drives support
 
-**ID:** 48d2425a | **Status:** Open | **Created:** 2026-02-15T14:31:21+01:00
+**ID:** 48d2425a | **Status:** Done | **Created:** 2026-02-15T14:31:21+01:00
 
 Support attaching additional virtual disks to the VM beyond the root overlay and seed ISO.
 
-## Config syntax
+## Implementation
+
+- Config uses `BTreeMap<String, DriveConfig>` — key is drive name, duplicates impossible
+- Drive images created as qcow2 via pure Rust `src/qcow2.rs` module (no external tools)
+- Drives attached as virtio disks (vdb, vdc, ...) in domain XML
+- Idempotent: existing drive images reused on subsequent `rum up`
 
 ```toml
-[[drives]]
+[drives.data]
 size = "20G"
-target = "/mnt/data"    # optional: auto-mount via cloud-init
-format = "qcow2"        # default: qcow2
+target = "/mnt/data"    # optional: for future auto-mount
 
-[[drives]]
+[drives.scratch]
 size = "50G"
-target = "/mnt/scratch"
 ```
 
-## Approach
+## Not yet implemented
 
-1. **Create disk images** — generate qcow2 images in the VM's data dir (`~/.local/share/rum/<name>/`)
-2. **Domain XML** — add `<disk>` elements with virtio bus (vdb, vdc, etc.)
-3. **Cloud-init** — use `disk_setup` + `fs_setup` + `mounts` modules to partition, format, and mount on first boot
-4. **Idempotency** — on subsequent `rum up`, reuse existing disk images (don't reformat)
-
-## Domain XML changes
-
-Additional `<disk type="file" device="disk">` elements with auto-assigned device names (vdb, vdc, ...).
+- Auto-formatting and mounting (disk_setup/fs_setup in cloud-init) — deferred for ext4 + ZFS support
 
 ## Related
 

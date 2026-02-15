@@ -30,3 +30,8 @@ pub fn seed_path(name: &str, hash: &str) -> PathBuf {
 pub fn domain_xml_path(name: &str) -> PathBuf {
     work_dir(name).join("domain.xml")
 }
+
+/// Path to an extra drive image for a VM.
+pub fn drive_path(vm_name: &str, drive_name: &str) -> PathBuf {
+    work_dir(vm_name).join(format!("drive-{drive_name}.qcow2"))
+}
