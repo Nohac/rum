@@ -275,9 +275,7 @@ pub fn generate_domain_xml(
             source: FsSource {
                 dir: m.source.display().to_string(),
             },
-            target: FsTarget {
-                dir: m.tag.clone(),
-            },
+            target: FsTarget { dir: m.tag.clone() },
             readonly: if m.readonly { Some(Empty {}) } else { None },
         })
         .collect();
@@ -372,9 +370,7 @@ pub fn generate_domain_xml(
             },
             serial: Serial {
                 serial_type: "pty".into(),
-                target: SerialTarget {
-                    port: "0".into(),
-                },
+                target: SerialTarget { port: "0".into() },
             },
             console: Console {
                 console_type: "pty".into(),

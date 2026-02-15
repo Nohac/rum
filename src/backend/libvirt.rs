@@ -109,10 +109,11 @@ impl super::Backend for LibvirtBackend {
             if let Ok(mut entries) = tokio::fs::read_dir(&work).await {
                 while let Ok(Some(entry)) = entries.next_entry().await {
                     let name = entry.file_name();
-                    if let Some(s) = name.to_str() {
-                        if s.starts_with("seed-") && s.ends_with(".iso") {
-                            let _ = tokio::fs::remove_file(entry.path()).await;
-                        }
+                    if let Some(s) = name.to_str()
+                        && s.starts_with("seed-")
+                        && s.ends_with(".iso")
+                    {
+                        let _ = tokio::fs::remove_file(entry.path()).await;
                     }
                 }
             }
@@ -127,14 +128,22 @@ impl super::Backend for LibvirtBackend {
         }
 
         // 4. Generate domain XML
-        let xml = domain_xml::generate_domain_xml(config, &overlay_path, &seed_path, &mounts, &drives);
+        let xml =
+            domain_xml::generate_domain_xml(config, &overlay_path, &seed_path, &mounts, &drives);
 
         // 5. Define or redefine domain
         println!("Configuring VM...");
         let existing = Domain::lookup_by_name(&conn, name);
         match existing {
             Ok(dom) => {
-                if domain_xml::xml_has_changed(config, &overlay_path, &seed_path, &mounts, &drives, &xml_path) {
+                if domain_xml::xml_has_changed(
+                    config,
+                    &overlay_path,
+                    &seed_path,
+                    &mounts,
+                    &drives,
+                    &xml_path,
+                ) {
                     if is_running(&dom) {
                         return Err(RumError::RequiresRestart { name: name.clone() });
                     }

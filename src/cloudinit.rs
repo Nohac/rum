@@ -52,13 +52,26 @@ pub async fn generate_seed_iso(
     let user_data = build_user_data(provision_script, packages, mounts);
     // Network config v2 for cloud-init NoCloud datasource.
     // Note: no outer "network:" wrapper — the file IS the network config directly.
-    let network_config = "version: 2\nethernets:\n  id0:\n    match:\n      name: \"en*\"\n    dhcp4: true\n";
+    let network_config =
+        "version: 2\nethernets:\n  id0:\n    match:\n      name: \"en*\"\n    dhcp4: true\n";
 
-    let iso = iso9660::build_iso("CIDATA", &[
-        IsoFile { name: "meta-data", data: meta_data.as_bytes() },
-        IsoFile { name: "user-data", data: user_data.as_bytes() },
-        IsoFile { name: "network-config", data: network_config.as_bytes() },
-    ]);
+    let iso = iso9660::build_iso(
+        "CIDATA",
+        &[
+            IsoFile {
+                name: "meta-data",
+                data: meta_data.as_bytes(),
+            },
+            IsoFile {
+                name: "user-data",
+                data: user_data.as_bytes(),
+            },
+            IsoFile {
+                name: "network-config",
+                data: network_config.as_bytes(),
+            },
+        ],
+    );
 
     tokio::fs::write(seed_path, &iso)
         .await
@@ -77,7 +90,11 @@ ExecStart=
 ExecStart=-/sbin/agetty --autologin rum --noclear --keep-baud 115200,38400,9600 %I $TERM
 ";
 
-fn build_user_data(provision_script: &str, packages: &[String], mounts: &[ResolvedMount]) -> String {
+fn build_user_data(
+    provision_script: &str,
+    packages: &[String],
+    mounts: &[ResolvedMount],
+) -> String {
     let user = value!({
         "name": "rum",
         "plain_text_passwd": "rum",
@@ -106,7 +123,11 @@ fn build_user_data(provision_script: &str, packages: &[String], mounts: &[Resolv
     // on disk by the time we reload + restart the getty.
     let mut runcmd = VArray::new();
     runcmd.push(value!(["systemctl", "daemon-reload"]));
-    runcmd.push(value!(["systemctl", "restart", "serial-getty@ttyS0.service"]));
+    runcmd.push(value!([
+        "systemctl",
+        "restart",
+        "serial-getty@ttyS0.service"
+    ]));
 
     // Create mount point directories before cloud-init processes mounts
     for m in mounts {
@@ -118,7 +139,10 @@ fn build_user_data(provision_script: &str, packages: &[String], mounts: &[Resolv
     }
 
     if !provision_script.is_empty() {
-        runcmd.push(value!(["/bin/bash", "/var/lib/cloud/scripts/rum-provision.sh"]));
+        runcmd.push(value!([
+            "/bin/bash",
+            "/var/lib/cloud/scripts/rum-provision.sh"
+        ]));
     }
 
     let mut config = value!({
@@ -163,7 +187,6 @@ fn build_user_data(provision_script: &str, packages: &[String], mounts: &[Resolv
     format!("#cloud-config\n{yaml}")
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,7 +216,9 @@ mod tests {
     fn user_data_yaml_special_chars_in_packages() {
         let ud = build_user_data("", &["foo: bar".into()], &[]);
         // YAML serializer should quote or escape the colon
-        assert!(ud.contains("foo: bar") || ud.contains("'foo: bar'") || ud.contains("\"foo: bar\""));
+        assert!(
+            ud.contains("foo: bar") || ud.contains("'foo: bar'") || ud.contains("\"foo: bar\"")
+        );
     }
 
     #[test]

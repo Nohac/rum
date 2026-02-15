@@ -339,7 +339,7 @@ fn write_root_directory(
 /// architecture.
 fn write_fixed_dir_record(buf: &mut [u8], extent: u32, size: u32, name: &[u8], is_dir: bool) {
     let name_len = name.len();
-    let record_len = 33 + name_len + (if name_len % 2 == 0 { 1 } else { 0 });
+    let record_len = 33 + name_len + (if name_len.is_multiple_of(2) { 1 } else { 0 });
     buf[0] = record_len as u8;
     put_u32_both(&mut buf[2..10], extent);
     put_u32_both(&mut buf[10..18], size);
@@ -355,7 +355,7 @@ fn dir_record(extent: u32, size: u32, name: &[u8], is_dir: bool, su: &[u8]) -> V
     let name_len = name.len();
     // ISO 9660 requires the system use area to start at an even offset, so we
     // add a padding byte when the name length is even (because 33 + even = odd).
-    let padding = if name_len % 2 == 0 { 1 } else { 0 };
+    let padding = if name_len.is_multiple_of(2) { 1 } else { 0 };
     let record_len = 33 + name_len + padding + su.len();
     let mut buf = vec![0u8; record_len];
     buf[0] = record_len as u8;
@@ -537,7 +537,7 @@ fn sectors_for(bytes: usize) -> usize {
     if bytes == 0 {
         1
     } else {
-        (bytes + SECTOR_SIZE - 1) / SECTOR_SIZE
+        bytes.div_ceil(SECTOR_SIZE)
     }
 }
 

@@ -308,10 +308,7 @@ impl Config {
 /// Generate a filesystem tag from a mount target path.
 /// E.g. `/mnt/project` → `mnt_project`
 fn sanitize_tag(target: &str) -> String {
-    target
-        .replace('/', "_")
-        .trim_start_matches('_')
-        .to_string()
+    target.replace('/', "_").trim_start_matches('_').to_string()
 }
 
 pub fn load_config(path: &Path) -> Result<Config, RumError> {

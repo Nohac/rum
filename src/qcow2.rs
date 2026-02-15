@@ -146,9 +146,10 @@ fn parse_size(s: &str) -> Result<u64, RumError> {
         }
     };
 
-    num.checked_mul(multiplier).ok_or_else(|| RumError::Validation {
-        message: format!("drive size overflows: '{s}'"),
-    })
+    num.checked_mul(multiplier)
+        .ok_or_else(|| RumError::Validation {
+            message: format!("drive size overflows: '{s}'"),
+        })
 }
 
 /// Build a complete QCOW2 v2 image as a byte vector.

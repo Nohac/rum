@@ -54,9 +54,7 @@ pub enum RumError {
     MountSourceNotFound { path: String },
 
     #[error("failed to detect git repository: {message}")]
-    #[diagnostic(help(
-        "source = \"git\" requires rum.toml to be inside a git repository"
-    ))]
+    #[diagnostic(help("source = \"git\" requires rum.toml to be inside a git repository"))]
     GitRepoDetection { message: String },
 
     #[error("{command} is not yet implemented")]
