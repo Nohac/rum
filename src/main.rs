@@ -35,8 +35,8 @@ async fn main() -> miette::Result<()> {
             cloudinit::generate_seed_iso(
                 &seed_path,
                 sys_config.hostname(),
-                &sys_config.config.provision.script,
-                &sys_config.config.provision.packages,
+                sys_config.config.provision.system.as_ref().map(|s| s.script.as_str()),
+                sys_config.config.provision.boot.as_ref().map(|s| s.script.as_str()),
                 &mounts,
                 &resolved_fs,
             )

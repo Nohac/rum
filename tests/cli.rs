@@ -85,9 +85,11 @@ memory_mb = 4096
 hostname = "myhost"
 wait_for_ip = false
 
-[provision]
+[provision.system]
 script = "echo hello"
-packages = ["curl", "git"]
+
+[provision.boot]
+script = "echo booting"
 
 [advanced]
 libvirt_uri = "qemu:///session"

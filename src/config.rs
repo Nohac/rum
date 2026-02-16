@@ -150,10 +150,18 @@ impl Default for NetworkConfig {
 #[derive(Debug, Clone, Default, Facet)]
 #[facet(default)]
 pub struct ProvisionConfig {
-    #[facet(default)]
+    pub system: Option<ProvisionSystemConfig>,
+    pub boot: Option<ProvisionBootConfig>,
+}
+
+#[derive(Debug, Clone, Facet)]
+pub struct ProvisionSystemConfig {
     pub script: String,
-    #[facet(default)]
-    pub packages: Vec<String>,
+}
+
+#[derive(Debug, Clone, Facet)]
+pub struct ProvisionBootConfig {
+    pub script: String,
 }
 
 #[derive(Debug, Clone, Facet)]
@@ -1004,5 +1012,43 @@ pool = "logspool"
             }
             _ => panic!("expected Zfs"),
         }
+    }
+
+    #[test]
+    fn parse_config_with_provision_system_and_boot() {
+        let toml = r#"
+[image]
+base = "ubuntu.img"
+
+[resources]
+cpus = 1
+memory_mb = 512
+
+[provision.system]
+script = "echo system"
+
+[provision.boot]
+script = "echo boot"
+"#;
+        let config: Config = facet_toml::from_str(toml).unwrap();
+        let system = config.provision.system.as_ref().unwrap();
+        assert_eq!(system.script, "echo system");
+        let boot = config.provision.boot.as_ref().unwrap();
+        assert_eq!(boot.script, "echo boot");
+    }
+
+    #[test]
+    fn parse_config_provision_absent_is_none() {
+        let toml = r#"
+[image]
+base = "ubuntu.img"
+
+[resources]
+cpus = 1
+memory_mb = 512
+"#;
+        let config: Config = facet_toml::from_str(toml).unwrap();
+        assert!(config.provision.system.is_none());
+        assert!(config.provision.boot.is_none());
     }
 }

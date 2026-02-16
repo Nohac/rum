@@ -66,8 +66,8 @@ impl super::Backend for LibvirtBackend {
 
         let seed_hash = cloudinit::seed_hash(
             sys_config.hostname(),
-            &config.provision.script,
-            &config.provision.packages,
+            config.provision.system.as_ref().map(|s| s.script.as_str()),
+            config.provision.boot.as_ref().map(|s| s.script.as_str()),
             &mounts,
             &drives,
             &resolved_fs,
@@ -124,8 +124,8 @@ impl super::Backend for LibvirtBackend {
             cloudinit::generate_seed_iso(
                 &seed_path,
                 sys_config.hostname(),
-                &config.provision.script,
-                &config.provision.packages,
+                config.provision.system.as_ref().map(|s| s.script.as_str()),
+                config.provision.boot.as_ref().map(|s| s.script.as_str()),
                 &mounts,
                 &resolved_fs,
             )

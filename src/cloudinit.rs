@@ -10,16 +10,16 @@ use crate::iso9660::{self, IsoFile};
 /// Compute a short hash of the cloud-init inputs for cache-busting the seed ISO filename.
 pub fn seed_hash(
     hostname: &str,
-    provision_script: &str,
-    packages: &[String],
+    system_script: Option<&str>,
+    boot_script: Option<&str>,
     mounts: &[ResolvedMount],
     drives: &[ResolvedDrive],
     fs: &[ResolvedFs],
 ) -> String {
     let mut hasher = DefaultHasher::new();
     hostname.hash(&mut hasher);
-    provision_script.hash(&mut hasher);
-    packages.hash(&mut hasher);
+    system_script.hash(&mut hasher);
+    boot_script.hash(&mut hasher);
     for m in mounts {
         m.tag.hash(&mut hasher);
         m.target.hash(&mut hasher);
@@ -39,8 +39,8 @@ pub fn seed_hash(
 pub async fn generate_seed_iso(
     seed_path: &Path,
     hostname: &str,
-    provision_script: &str,
-    packages: &[String],
+    system_script: Option<&str>,
+    boot_script: Option<&str>,
     mounts: &[ResolvedMount],
     fs: &[ResolvedFs],
 ) -> Result<(), RumError> {
@@ -54,7 +54,7 @@ pub async fn generate_seed_iso(
     }
 
     let meta_data = format!("instance-id: {hostname}\nlocal-hostname: {hostname}\n");
-    let user_data = build_user_data(provision_script, packages, mounts, fs);
+    let user_data = build_user_data(system_script, boot_script, mounts, fs);
     // Network config v2 for cloud-init NoCloud datasource.
     // Note: no outer "network:" wrapper — the file IS the network config directly.
     let network_config =
@@ -95,9 +95,24 @@ ExecStart=
 ExecStart=-/sbin/agetty --autologin rum --noclear --keep-baud 115200,38400,9600 %I $TERM
 ";
 
+const RUM_BOOT_SERVICE: &str = "\
+[Unit]
+Description=rum boot provisioning
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /var/lib/cloud/scripts/rum-boot.sh
+
+[Install]
+WantedBy=multi-user.target
+";
+
 fn build_user_data(
-    provision_script: &str,
-    packages: &[String],
+    system_script: Option<&str>,
+    boot_script: Option<&str>,
     mounts: &[ResolvedMount],
     fs: &[ResolvedFs],
 ) -> String {
@@ -126,11 +141,23 @@ fn build_user_data(
         }));
     }
 
-    if !provision_script.is_empty() {
+    if let Some(script) = system_script {
         write_files.push(value!({
-            "path": "/var/lib/cloud/scripts/rum-provision.sh",
+            "path": "/var/lib/cloud/scripts/rum-system.sh",
             "permissions": "0755",
-            "content": (provision_script),
+            "content": (script),
+        }));
+    }
+
+    if let Some(script) = boot_script {
+        write_files.push(value!({
+            "path": "/var/lib/cloud/scripts/rum-boot.sh",
+            "permissions": "0755",
+            "content": (script),
+        }));
+        write_files.push(value!({
+            "path": "/etc/systemd/system/rum-boot.service",
+            "content": (RUM_BOOT_SERVICE),
         }));
     }
 
@@ -161,10 +188,22 @@ fn build_user_data(
         ]));
     }
 
-    if !provision_script.is_empty() {
+    if system_script.is_some() {
         runcmd.push(value!([
             "/bin/bash",
-            "/var/lib/cloud/scripts/rum-provision.sh"
+            "/var/lib/cloud/scripts/rum-system.sh"
+        ]));
+    }
+
+    if boot_script.is_some() {
+        // Enable the service for subsequent boots (don't use --now, it
+        // deadlocks: runcmd runs inside cloud-final.service, and the
+        // unit has After=cloud-final.service).
+        runcmd.push(value!(["systemctl", "enable", "rum-boot.service"]));
+        // Run the boot script directly on first boot.
+        runcmd.push(value!([
+            "/bin/bash",
+            "/var/lib/cloud/scripts/rum-boot.sh"
         ]));
     }
 
@@ -190,16 +229,6 @@ fn build_user_data(
         }
         if let Some(obj) = config.as_object_mut() {
             obj.insert("mounts", Value::from(mount_entries));
-        }
-    }
-
-    if !packages.is_empty() {
-        let mut pkg_array = VArray::new();
-        for pkg in packages {
-            pkg_array.push(Value::from(pkg.as_str()));
-        }
-        if let Some(obj) = config.as_object_mut() {
-            obj.insert("packages", Value::from(pkg_array));
         }
     }
 
@@ -375,37 +404,20 @@ mod tests {
 
     #[test]
     fn user_data_is_valid_cloud_config() {
-        let ud = build_user_data("", &[], &[], &[]);
+        let ud = build_user_data(None, None, &[], &[]);
         assert!(ud.starts_with("#cloud-config\n"));
     }
 
     #[test]
     fn user_data_contains_user() {
-        let ud = build_user_data("", &[], &[], &[]);
+        let ud = build_user_data(None, None, &[], &[]);
         assert!(ud.contains("name: rum"));
         assert!(ud.contains("lock_passwd: false"));
     }
 
     #[test]
-    fn user_data_contains_packages() {
-        let ud = build_user_data("", &["curl".into(), "git".into()], &[], &[]);
-        assert!(ud.contains("packages:"));
-        assert!(ud.contains("curl"));
-        assert!(ud.contains("git"));
-    }
-
-    #[test]
-    fn user_data_yaml_special_chars_in_packages() {
-        let ud = build_user_data("", &["foo: bar".into()], &[], &[]);
-        // YAML serializer should quote or escape the colon
-        assert!(
-            ud.contains("foo: bar") || ud.contains("'foo: bar'") || ud.contains("\"foo: bar\"")
-        );
-    }
-
-    #[test]
     fn user_data_autologin_dropin() {
-        let ud = build_user_data("", &[], &[], &[]);
+        let ud = build_user_data(None, None, &[], &[]);
         assert!(ud.contains("autologin.conf"));
         assert!(ud.contains("--autologin rum"));
         assert!(ud.contains("--keep-baud 115200,38400,9600"));
@@ -413,25 +425,61 @@ mod tests {
 
     #[test]
     fn user_data_runcmd_restarts_getty() {
-        let ud = build_user_data("", &[], &[], &[]);
+        let ud = build_user_data(None, None, &[], &[]);
         assert!(ud.contains("runcmd:"));
         assert!(ud.contains("daemon-reload"));
         assert!(ud.contains("serial-getty@ttyS0.service"));
     }
 
     #[test]
-    fn user_data_provision_script() {
-        let ud = build_user_data("echo hello\necho world", &[], &[], &[]);
-        assert!(ud.contains("rum-provision.sh"));
+    fn user_data_system_script() {
+        let ud = build_user_data(Some("echo hello\necho world"), None, &[], &[]);
+        assert!(ud.contains("rum-system.sh"));
         assert!(ud.contains("echo hello"));
         assert!(ud.contains("echo world"));
         assert!(ud.contains("runcmd:"));
     }
 
     #[test]
-    fn user_data_runcmd_includes_provision_script() {
-        let ud = build_user_data("echo hello", &[], &[], &[]);
-        assert!(ud.contains("rum-provision.sh"));
+    fn user_data_runcmd_includes_system_script() {
+        let ud = build_user_data(Some("echo hello"), None, &[], &[]);
+        assert!(ud.contains("rum-system.sh"));
+    }
+
+    #[test]
+    fn user_data_boot_script() {
+        let ud = build_user_data(None, Some("echo booting"), &[], &[]);
+        assert!(ud.contains("rum-boot.sh"));
+        assert!(ud.contains("echo booting"));
+        assert!(ud.contains("rum-boot.service"));
+        assert!(ud.contains("systemctl"));
+        assert!(ud.contains("enable"));
+    }
+
+    #[test]
+    fn user_data_boot_script_absent_when_none() {
+        let ud = build_user_data(None, None, &[], &[]);
+        assert!(!ud.contains("rum-boot.sh"));
+        assert!(!ud.contains("rum-boot.service"));
+    }
+
+    #[test]
+    fn user_data_system_before_boot() {
+        let ud = build_user_data(Some("echo system"), Some("echo boot"), &[], &[]);
+        let system_pos = ud.find("rum-system.sh").unwrap();
+        let boot_pos = ud.find("rum-boot.service").unwrap();
+        assert!(
+            system_pos < boot_pos,
+            "system script should appear before boot enable in runcmd"
+        );
+    }
+
+    #[test]
+    fn user_data_boot_service_content() {
+        let ud = build_user_data(None, Some("echo boot"), &[], &[]);
+        assert!(ud.contains("Type=oneshot"));
+        assert!(ud.contains("RemainAfterExit=yes"));
+        assert!(ud.contains("ExecStart=/bin/bash /var/lib/cloud/scripts/rum-boot.sh"));
     }
 
     #[test]
@@ -442,7 +490,7 @@ mod tests {
             readonly: false,
             tag: "mnt_project".into(),
         }];
-        let ud = build_user_data("", &[], &mounts, &[]);
+        let ud = build_user_data(None, None, &mounts, &[]);
         assert!(ud.contains("mounts:"));
         assert!(ud.contains("mnt_project"));
         assert!(ud.contains("/mnt/project"));
@@ -508,25 +556,25 @@ mod tests {
             dev: "/dev/vdb".into(),
             target: "/mnt/data".into(),
         })];
-        let ud = build_user_data("", &[], &[], &fs);
+        let ud = build_user_data(None, None, &[], &fs);
         assert!(ud.contains("rum-drives.sh"));
         assert!(ud.contains("/bin/sh"));
         assert!(ud.contains("mkfs.ext4"));
     }
 
     #[test]
-    fn user_data_drive_script_before_provision() {
+    fn user_data_drive_script_before_system() {
         let fs = vec![ResolvedFs::Simple(SimpleFs {
             filesystem: "ext4".into(),
             dev: "/dev/vdb".into(),
             target: "/mnt/data".into(),
         })];
-        let ud = build_user_data("echo hello", &[], &[], &fs);
+        let ud = build_user_data(Some("echo hello"), None, &[], &fs);
         let drives_pos = ud.find("rum-drives.sh").unwrap();
-        let provision_pos = ud.find("rum-provision.sh").unwrap();
+        let system_pos = ud.find("rum-system.sh").unwrap();
         assert!(
-            drives_pos < provision_pos,
-            "drive script should run before provision script"
+            drives_pos < system_pos,
+            "drive script should run before system script"
         );
     }
 }
