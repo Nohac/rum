@@ -90,15 +90,36 @@ pub async fn generate_seed_iso(
 }
 
 const AUTOLOGIN_DROPIN: &str = "\
+[Unit]
+After=rum-system.service rum-boot.service
+
 [Service]
 ExecStart=
 ExecStart=-/sbin/agetty --autologin rum --noclear --keep-baud 115200,38400,9600 %I $TERM
 ";
 
+const RUM_SYSTEM_SERVICE: &str = "\
+[Unit]
+Description=rum system provisioning (first boot)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/var/lib/rum/.system-provisioned
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /var/lib/cloud/scripts/rum-system.sh
+ExecStartPost=/bin/mkdir -p /var/lib/rum
+ExecStartPost=/bin/touch /var/lib/rum/.system-provisioned
+
+[Install]
+WantedBy=multi-user.target
+";
+
 const RUM_BOOT_SERVICE: &str = "\
 [Unit]
 Description=rum boot provisioning
-After=network-online.target
+After=network-online.target rum-system.service
 Wants=network-online.target
 
 [Service]
@@ -124,13 +145,7 @@ fn build_user_data(
         "sudo": "ALL=(ALL) NOPASSWD:ALL",
     });
 
-    let autologin_file = value!({
-        "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
-        "content": (AUTOLOGIN_DROPIN),
-    });
-
     let mut write_files = VArray::new();
-    write_files.push(autologin_file);
 
     if !fs.is_empty() {
         let drive_script = build_drive_script(fs);
@@ -147,6 +162,10 @@ fn build_user_data(
             "permissions": "0755",
             "content": (script),
         }));
+        write_files.push(value!({
+            "path": "/etc/systemd/system/rum-system.service",
+            "content": (RUM_SYSTEM_SERVICE),
+        }));
     }
 
     if let Some(script) = boot_script {
@@ -161,15 +180,12 @@ fn build_user_data(
         }));
     }
 
-    // runcmd runs late (after write_files), so the autologin dropin is already
-    // on disk by the time we reload + restart the getty.
+    write_files.push(value!({
+        "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+        "content": (AUTOLOGIN_DROPIN),
+    }));
+
     let mut runcmd = VArray::new();
-    runcmd.push(value!(["systemctl", "daemon-reload"]));
-    runcmd.push(value!([
-        "systemctl",
-        "restart",
-        "serial-getty@ttyS0.service"
-    ]));
 
     // Create mount point directories before cloud-init processes mounts
     for m in mounts {
@@ -180,7 +196,7 @@ fn build_user_data(
         ])));
     }
 
-    // Drive formatting/mounting runs before the provision script
+    // Drive formatting/mounting runs before provisioning services
     if !fs.is_empty() {
         runcmd.push(value!([
             "/bin/sh",
@@ -188,24 +204,30 @@ fn build_user_data(
         ]));
     }
 
+    // Reload systemd so it picks up the service unit files from write_files,
+    // then enable+start each provisioning service (blocks until complete).
+    // No deadlock: these services don't have After=cloud-final.service.
+    if system_script.is_some() || boot_script.is_some() {
+        runcmd.push(value!(["systemctl", "daemon-reload"]));
+    }
     if system_script.is_some() {
-        runcmd.push(value!([
-            "/bin/bash",
-            "/var/lib/cloud/scripts/rum-system.sh"
-        ]));
+        runcmd.push(value!(["systemctl", "enable", "--now", "rum-system.service"]));
+    }
+    if boot_script.is_some() {
+        runcmd.push(value!(["systemctl", "enable", "--now", "rum-boot.service"]));
     }
 
-    if boot_script.is_some() {
-        // Enable the service for subsequent boots (don't use --now, it
-        // deadlocks: runcmd runs inside cloud-final.service, and the
-        // unit has After=cloud-final.service).
-        runcmd.push(value!(["systemctl", "enable", "rum-boot.service"]));
-        // Run the boot script directly on first boot.
-        runcmd.push(value!([
-            "/bin/bash",
-            "/var/lib/cloud/scripts/rum-boot.sh"
-        ]));
-    }
+    // Reload and restart getty to pick up the autologin dropin from write_files.
+    // The dropin has After=rum-system.service rum-boot.service so on subsequent
+    // boots systemd won't start the getty until provisioning completes.
+    // Non-existent or skipped services (ConditionPathExists) satisfy After=
+    // immediately.
+    runcmd.push(value!(["systemctl", "daemon-reload"]));
+    runcmd.push(value!([
+        "systemctl",
+        "restart",
+        "serial-getty@ttyS0.service"
+    ]));
 
     let mut config = value!({
         "users": [user],
@@ -416,11 +438,14 @@ mod tests {
     }
 
     #[test]
-    fn user_data_autologin_dropin() {
+    fn user_data_autologin_dropin_in_write_files() {
         let ud = build_user_data(None, None, &[], &[]);
-        assert!(ud.contains("autologin.conf"));
-        assert!(ud.contains("--autologin rum"));
-        assert!(ud.contains("--keep-baud 115200,38400,9600"));
+        let write_files = &ud[ud.find("write_files:").unwrap()..ud.find("runcmd:").unwrap()];
+        assert!(write_files.contains("autologin.conf"));
+        assert!(write_files.contains("--autologin rum"));
+        assert!(write_files.contains("--keep-baud 115200,38400,9600"));
+        assert!(write_files.contains("%I"));
+        assert!(write_files.contains("$TERM"));
     }
 
     #[test]
@@ -437,13 +462,17 @@ mod tests {
         assert!(ud.contains("rum-system.sh"));
         assert!(ud.contains("echo hello"));
         assert!(ud.contains("echo world"));
+        assert!(ud.contains("rum-system.service"));
         assert!(ud.contains("runcmd:"));
     }
 
     #[test]
-    fn user_data_runcmd_includes_system_script() {
+    fn user_data_runcmd_enables_system_service() {
         let ud = build_user_data(Some("echo hello"), None, &[], &[]);
-        assert!(ud.contains("rum-system.sh"));
+        let runcmd = &ud[ud.find("runcmd:").unwrap()..];
+        assert!(runcmd.contains("enable"));
+        assert!(runcmd.contains("--now"));
+        assert!(runcmd.contains("rum-system.service"));
     }
 
     #[test]
@@ -460,17 +489,18 @@ mod tests {
     fn user_data_boot_script_absent_when_none() {
         let ud = build_user_data(None, None, &[], &[]);
         assert!(!ud.contains("rum-boot.sh"));
-        assert!(!ud.contains("rum-boot.service"));
+        assert!(!ud.contains("/etc/systemd/system/rum-boot.service"));
     }
 
     #[test]
     fn user_data_system_before_boot() {
         let ud = build_user_data(Some("echo system"), Some("echo boot"), &[], &[]);
-        let system_pos = ud.find("rum-system.sh").unwrap();
-        let boot_pos = ud.find("rum-boot.service").unwrap();
+        let runcmd = &ud[ud.find("runcmd:").unwrap()..];
+        let system_pos = runcmd.find("rum-system.service").unwrap();
+        let boot_pos = runcmd.find("rum-boot.service").unwrap();
         assert!(
             system_pos < boot_pos,
-            "system script should appear before boot enable in runcmd"
+            "system service should be enabled before boot service in runcmd"
         );
     }
 
@@ -480,6 +510,22 @@ mod tests {
         assert!(ud.contains("Type=oneshot"));
         assert!(ud.contains("RemainAfterExit=yes"));
         assert!(ud.contains("ExecStart=/bin/bash /var/lib/cloud/scripts/rum-boot.sh"));
+        assert!(ud.contains("After=network-online.target rum-system.service"));
+    }
+
+    #[test]
+    fn user_data_system_service_content() {
+        let ud = build_user_data(Some("echo sys"), None, &[], &[]);
+        assert!(ud.contains("ConditionPathExists=!/var/lib/rum/.system-provisioned"));
+        assert!(ud.contains("ExecStart=/bin/bash /var/lib/cloud/scripts/rum-system.sh"));
+        assert!(ud.contains("ExecStartPost=/bin/touch /var/lib/rum/.system-provisioned"));
+    }
+
+    #[test]
+    fn user_data_system_service_in_write_files() {
+        let ud = build_user_data(Some("echo sys"), None, &[], &[]);
+        let write_files = &ud[ud.find("write_files:").unwrap()..ud.find("runcmd:").unwrap()];
+        assert!(write_files.contains("rum-system.service"));
     }
 
     #[test]
@@ -570,11 +616,31 @@ mod tests {
             target: "/mnt/data".into(),
         })];
         let ud = build_user_data(Some("echo hello"), None, &[], &fs);
-        let drives_pos = ud.find("rum-drives.sh").unwrap();
-        let system_pos = ud.find("rum-system.sh").unwrap();
+        let runcmd = &ud[ud.find("runcmd:").unwrap()..];
+        let drives_pos = runcmd.find("rum-drives.sh").unwrap();
+        let system_pos = runcmd.find("rum-system.service").unwrap();
         assert!(
             drives_pos < system_pos,
-            "drive script should run before system script"
+            "drive script should run before system service in runcmd"
+        );
+    }
+
+    #[test]
+    fn user_data_autologin_waits_for_provisioning_services() {
+        let ud = build_user_data(None, None, &[], &[]);
+        assert!(ud.contains("After=rum-system.service rum-boot.service"));
+    }
+
+    #[test]
+    fn user_data_getty_restart_after_provisioning() {
+        let ud = build_user_data(Some("echo sys"), Some("echo boot"), &[], &[]);
+        let runcmd = &ud[ud.find("runcmd:").unwrap()..];
+        let system_pos = runcmd.find("rum-system.service").unwrap();
+        let boot_pos = runcmd.find("rum-boot.service").unwrap();
+        let getty_pos = runcmd.find("serial-getty@ttyS0.service").unwrap();
+        assert!(
+            getty_pos > system_pos && getty_pos > boot_pos,
+            "getty restart should be after all provisioning services"
         );
     }
 }
