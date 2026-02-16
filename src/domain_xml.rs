@@ -17,6 +17,7 @@ use facet::Facet;
 use facet_xml as xml;
 
 use crate::config::{Config, ResolvedDrive, ResolvedMount};
+use crate::network_xml;
 
 // ── XML model structs ──────────────────────────────────────
 //
@@ -111,7 +112,7 @@ struct Empty {}
 struct Devices {
     disk: Vec<Disk>,
     filesystem: Vec<Filesystem>,
-    interface: Interface,
+    interface: Vec<Interface>,
     serial: Serial,
     console: Console,
 }
@@ -190,8 +191,16 @@ struct FsTarget {
 struct Interface {
     #[facet(xml::attribute, rename = "type")]
     iface_type: String,
+    #[facet(default)]
+    mac: Option<InterfaceMac>,
     source: InterfaceSource,
     model: InterfaceModel,
+}
+
+#[derive(Debug, Facet)]
+struct InterfaceMac {
+    #[facet(xml::attribute)]
+    address: String,
 }
 
 #[derive(Debug, Facet)]
@@ -236,6 +245,29 @@ struct ConsoleTarget {
     target_type: String,
     #[facet(xml::attribute)]
     port: String,
+}
+
+// ── helpers ────────────────────────────────────────────────
+
+/// Generate a deterministic MAC address from VM name and interface index.
+///
+/// Uses the locally-administered OUI prefix `52:54:00` (standard for
+/// QEMU/KVM) followed by 3 bytes derived from a simple hash.
+pub fn generate_mac(vm_name: &str, index: usize) -> String {
+    // Simple FNV-1a-inspired hash for deterministic output
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in vm_name.bytes() {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash ^= index as u64;
+    hash = hash.wrapping_mul(0x100000001b3);
+
+    let bytes = hash.to_le_bytes();
+    format!(
+        "52:54:00:{:02x}:{:02x}:{:02x}",
+        bytes[0], bytes[1], bytes[2]
+    )
 }
 
 // ── public API ─────────────────────────────────────────────
@@ -335,6 +367,39 @@ pub fn generate_domain_xml(
         });
     }
 
+    // Build network interfaces
+    let mut interfaces = Vec::new();
+
+    if config.network.nat {
+        interfaces.push(Interface {
+            iface_type: "network".into(),
+            mac: None,
+            source: InterfaceSource {
+                network: "default".into(),
+            },
+            model: InterfaceModel {
+                model_type: "virtio".into(),
+            },
+        });
+    }
+
+    let prefix = network_xml::network_prefix(&config.name);
+    for (i, iface_cfg) in config.network.interfaces.iter().enumerate() {
+        let libvirt_name = network_xml::prefixed_name(&prefix, &iface_cfg.network);
+        interfaces.push(Interface {
+            iface_type: "network".into(),
+            mac: Some(InterfaceMac {
+                address: generate_mac(&config.name, i),
+            }),
+            source: InterfaceSource {
+                network: libvirt_name,
+            },
+            model: InterfaceModel {
+                model_type: "virtio".into(),
+            },
+        });
+    }
+
     let domain = Domain {
         domain_type: config.advanced.domain_type.clone(),
         name: config.name.clone(),
@@ -359,15 +424,7 @@ pub fn generate_domain_xml(
         devices: Devices {
             disk: disks,
             filesystem: filesystems,
-            interface: Interface {
-                iface_type: "network".into(),
-                source: InterfaceSource {
-                    network: "default".into(),
-                },
-                model: InterfaceModel {
-                    model_type: "virtio".into(),
-                },
-            },
+            interface: interfaces,
             serial: Serial {
                 serial_type: "pty".into(),
                 target: SerialTarget { port: "0".into() },
@@ -517,5 +574,76 @@ memory_mb = 512
         assert!(xml.contains(r#"dev="vdc""#));
         assert!(xml.contains("drive-data.qcow2"));
         assert!(xml.contains("drive-scratch.qcow2"));
+    }
+
+    #[test]
+    fn xml_default_config_has_single_nat_interface() {
+        let xml = make_xml(&test_config(), &[], &[]);
+        assert!(xml.contains(r#"<source network="default">"#));
+        // No explicit MAC on NAT interface
+        assert!(!xml.contains("<mac"));
+    }
+
+    #[test]
+    fn xml_nat_plus_extra_nic() {
+        let mut config = test_config();
+        config.network.interfaces = vec![InterfaceConfig {
+            network: "hostonly".into(),
+            ip: "192.168.50.10".into(),
+        }];
+        let xml = make_xml(&config, &[], &[]);
+        let prefix = network_xml::network_prefix("test-vm");
+        let expected_net = network_xml::prefixed_name(&prefix, "hostonly");
+        // NAT interface
+        assert!(xml.contains(r#"<source network="default">"#));
+        // Extra interface with MAC and prefixed network name
+        assert!(
+            xml.contains(&format!(r#"<source network="{expected_net}">"#)),
+            "expected prefixed network name '{expected_net}' in:\n{xml}"
+        );
+        assert!(xml.contains("<mac"));
+        assert!(xml.contains("52:54:00:"));
+    }
+
+    #[test]
+    fn xml_no_nat_with_extra_nic() {
+        let mut config = test_config();
+        config.network.nat = false;
+        config.network.interfaces = vec![InterfaceConfig {
+            network: "isolated".into(),
+            ip: String::new(),
+        }];
+        let xml = make_xml(&config, &[], &[]);
+        let prefix = network_xml::network_prefix("test-vm");
+        let expected_net = network_xml::prefixed_name(&prefix, "isolated");
+        assert!(!xml.contains(r#"<source network="default">"#));
+        assert!(
+            xml.contains(&format!(r#"<source network="{expected_net}">"#)),
+            "expected prefixed network name '{expected_net}' in:\n{xml}"
+        );
+    }
+
+    #[test]
+    fn xml_no_networking() {
+        let mut config = test_config();
+        config.network.nat = false;
+        let xml = make_xml(&config, &[], &[]);
+        assert!(!xml.contains("<interface"));
+        assert!(!xml.contains(r#"network="default""#));
+    }
+
+    #[test]
+    fn generate_mac_is_deterministic() {
+        let mac1 = generate_mac("test-vm", 0);
+        let mac2 = generate_mac("test-vm", 0);
+        assert_eq!(mac1, mac2);
+        assert!(mac1.starts_with("52:54:00:"));
+    }
+
+    #[test]
+    fn generate_mac_differs_by_index() {
+        let mac0 = generate_mac("test-vm", 0);
+        let mac1 = generate_mac("test-vm", 1);
+        assert_ne!(mac0, mac1);
     }
 }

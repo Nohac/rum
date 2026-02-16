@@ -9,7 +9,7 @@ use virt::network::Network;
 
 use crate::config::Config;
 use crate::error::RumError;
-use crate::{cloudinit, domain_xml, image, overlay, paths, qcow2};
+use crate::{cloudinit, domain_xml, image, network_xml, overlay, paths, qcow2};
 
 struct ConnGuard(Connect);
 
@@ -169,9 +169,9 @@ impl super::Backend for LibvirtBackend {
                 source: e,
             })?;
 
-        // 6. Ensure default network is active
+        // 6. Ensure networks are active
         println!("Checking network...");
-        ensure_default_network(&conn)?;
+        ensure_networks(&conn, config)?;
 
         // 7. Start if not running
         let dom = Domain::lookup_by_name(&conn, name).map_err(|e| RumError::Libvirt {
@@ -290,6 +290,22 @@ impl super::Backend for LibvirtBackend {
             tracing::info!(name, "domain undefined");
         }
 
+        // Tear down auto-created networks
+        let networks_state = paths::networks_state_path(name);
+        if networks_state.exists()
+            && let Ok(contents) = std::fs::read_to_string(&networks_state)
+        {
+            for net_name in contents.lines().filter(|l| !l.is_empty()) {
+                if let Ok(net) = Network::lookup_by_name(&conn, net_name) {
+                    if net.is_active().unwrap_or(false) {
+                        let _ = net.destroy();
+                    }
+                    let _ = net.undefine();
+                    tracing::info!(net_name, "removed network");
+                }
+            }
+        }
+
         // Remove work dir
         let work = paths::work_dir(name);
         if work.exists() {
@@ -384,18 +400,127 @@ fn define_domain(conn: &Connect, xml: &str) -> Result<Domain, RumError> {
     })
 }
 
-fn ensure_default_network(conn: &Connect) -> Result<(), RumError> {
-    let net = Network::lookup_by_name(conn, "default").map_err(|_| RumError::Libvirt {
-        message: "default network not found".into(),
-        hint: "run `sudo virsh net-define /usr/share/libvirt/networks/default.xml && sudo virsh net-start default`".into(),
+fn ensure_network_active(conn: &Connect, name: &str) -> Result<Network, RumError> {
+    let net = Network::lookup_by_name(conn, name).map_err(|_| RumError::Libvirt {
+        message: format!("network '{name}' not found"),
+        hint: format!("define the network with `virsh net-define` and `virsh net-start {name}`"),
     })?;
 
     if !net.is_active().unwrap_or(false) {
-        tracing::info!("starting inactive default network");
+        tracing::info!(name, "starting inactive network");
         net.create().map_err(|e| RumError::Libvirt {
-            message: format!("failed to start default network: {e}"),
-            hint: "try `sudo virsh net-start default`".into(),
+            message: format!("failed to start network '{name}': {e}"),
+            hint: format!("try `sudo virsh net-start {name}`"),
         })?;
+    }
+
+    Ok(net)
+}
+
+/// Ensure an extra (non-NAT) network exists and is active.
+/// Auto-creates it as a host-only network if it doesn't exist.
+fn ensure_extra_network(
+    conn: &Connect,
+    name: &str,
+    ip_hint: &str,
+) -> Result<Network, RumError> {
+    match Network::lookup_by_name(conn, name) {
+        Ok(net) => {
+            if !net.is_active().unwrap_or(false) {
+                tracing::info!(name, "starting inactive network");
+                net.create().map_err(|e| RumError::Libvirt {
+                    message: format!("failed to start network '{name}': {e}"),
+                    hint: "check libvirt permissions".into(),
+                })?;
+            }
+            Ok(net)
+        }
+        Err(_) => {
+            // Auto-create a host-only network
+            let subnet = network_xml::derive_subnet(name, ip_hint);
+            let xml = network_xml::generate_network_xml(name, &subnet);
+            tracing::info!(name, subnet, "auto-creating host-only network");
+            let net =
+                Network::define_xml(conn, &xml).map_err(|e| RumError::Libvirt {
+                    message: format!("failed to define network '{name}': {e}"),
+                    hint: "check libvirt permissions".into(),
+                })?;
+            net.create().map_err(|e| RumError::Libvirt {
+                message: format!("failed to start network '{name}': {e}"),
+                hint: "check libvirt permissions".into(),
+            })?;
+            Ok(net)
+        }
+    }
+}
+
+fn ensure_networks(conn: &Connect, config: &Config) -> Result<(), RumError> {
+    if config.network.nat {
+        ensure_network_active(conn, "default")?;
+    }
+
+    let prefix = network_xml::network_prefix(&config.name);
+    let mut created_networks = Vec::new();
+
+    for (i, iface) in config.network.interfaces.iter().enumerate() {
+        let libvirt_name = network_xml::prefixed_name(&prefix, &iface.network);
+        let net = ensure_extra_network(conn, &libvirt_name, &iface.ip)?;
+        created_networks.push(libvirt_name.clone());
+
+        if !iface.ip.is_empty() {
+            let mac = crate::domain_xml::generate_mac(&config.name, i);
+            add_dhcp_reservation(&net, &libvirt_name, &mac, &iface.ip, config.hostname())?;
+        }
+    }
+
+    // Save created network names for cleanup on destroy
+    if !created_networks.is_empty() {
+        let state_path = paths::networks_state_path(&config.name);
+        std::fs::write(&state_path, created_networks.join("\n")).map_err(|e| RumError::Io {
+            context: format!("saving network state to {}", state_path.display()),
+            source: e,
+        })?;
+    }
+
+    Ok(())
+}
+
+/// Add or update a DHCP host reservation in a libvirt network.
+fn add_dhcp_reservation(
+    net: &Network,
+    net_name: &str,
+    mac: &str,
+    ip: &str,
+    hostname: &str,
+) -> Result<(), RumError> {
+    let host_xml = format!(
+        "<host mac='{mac}' name='{hostname}' ip='{ip}'/>",
+    );
+
+    // Try to update existing reservation first (modify), fall back to add
+    let modify = virt::sys::VIR_NETWORK_UPDATE_COMMAND_ADD_LAST;
+    let section = virt::sys::VIR_NETWORK_SECTION_IP_DHCP_HOST;
+    let flags = virt::sys::VIR_NETWORK_UPDATE_AFFECT_LIVE
+        | virt::sys::VIR_NETWORK_UPDATE_AFFECT_CONFIG;
+
+    match net.update(modify, section, -1, &host_xml, flags) {
+        Ok(_) => {
+            tracing::info!(net_name, mac, ip, "added DHCP reservation");
+        }
+        Err(e) => {
+            // If add fails (entry may already exist), try modify
+            let modify_cmd = virt::sys::VIR_NETWORK_UPDATE_COMMAND_MODIFY;
+            net.update(modify_cmd, section, -1, &host_xml, flags)
+                .map_err(|e2| RumError::Libvirt {
+                    message: format!(
+                        "failed to set DHCP reservation in '{net_name}': add={e}, modify={e2}"
+                    ),
+                    hint: format!(
+                        "ensure network '{net_name}' has a DHCP range configured"
+                    ),
+                })?;
+            tracing::info!(net_name, mac, ip, "updated DHCP reservation");
+        }
     }
 
     Ok(())

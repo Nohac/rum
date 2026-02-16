@@ -4,44 +4,54 @@
 
 Forward host ports to guest ports so services running in the VM are accessible from the host via `localhost:<port>`.
 
-## Recommended approach: dual-NIC (NAT + host-only bridge)
+## Approach: vsock-based forwarding
 
-Instead of traditional port forwarding, use two network interfaces:
+Use **virtio-vsock** (AF_VSOCK) as a direct host↔guest transport to forward configured ports. This bypasses the network stack entirely — no extra NICs, no iptables rules, no IP addressing needed for the forwarding path.
 
-1. **NAT** (existing) — reliable internet access, works everywhere including WiFi
-2. **Host-only bridge** — direct host ↔ guest communication on a private subnet
+### How it works
 
-The guest gets a routable IP on the host-only bridge (e.g. `192.168.50.x`), making all guest ports directly accessible from the host without any forwarding rules. NAT handles internet. This avoids the fundamental limitation that libvirt has no native port forwarding in domain XML.
+1. **Domain XML** — add a `<vsock>` device with auto-assigned CID
+2. **Guest agent** — a small binary (shipped via cloud-init) listens on vsock and forwards incoming connections to `localhost:<guest-port>`
+3. **Host proxy** — rum listens on `localhost:<host-port>` and forwards over vsock to the guest agent
 
-### Why this is better than port forwarding
+### Why vsock
 
-- No iptables/nftables rules to manage
-- No SSH tunneling overhead
-- All guest ports accessible, not just configured ones
-- Works with WiFi (bridge is host-only, not connected to physical network)
-- Simple domain XML — just add a second `<interface>`
+- No network configuration needed for the forwarding channel
+- Very low overhead — no TCP/IP stack in the host↔guest path
+- Works even without guest networking configured
+- Libvirt supports it natively (`<vsock>` element in domain XML)
+- This is the approach Lima/Colima use (via gvisor-tap-vsock)
 
-### Implementation
+### Crate
 
-1. **Create a host-only libvirt network** (e.g. `rum-hostonly`) with a fixed subnet and DHCP
-2. **Add second NIC** in domain XML: `<interface type='network'>` pointing to the host-only network
-3. **Guest gets two IPs**: one from NAT (internet), one from host-only bridge (host access)
-4. **rum** can discover the guest's bridge IP via libvirt's DHCP lease info
+[vsock-rs](https://github.com/rust-vsock/vsock-rs) — Rust bindings for AF_VSOCK sockets (`VsockListener`, `VsockStream`). Thin wrapper around the kernel API.
 
 ### Config
 
-Port-specific forwarding may still be useful for exposing services on specific host ports:
-
 ```toml
-[network]
-mode = "nat"  # default, provides internet
-
 [[ports]]
 host = 8080
 guest = 80
+
+[[ports]]
+host = 5432
+guest = 5432
 ```
 
-With dual-NIC, `[[ports]]` could be implemented as simple iptables DNAT on the host-only bridge (known subnet, predictable) or even just documented as "connect to `<guest-ip>:<port>`".
+### Implementation tasks
+
+- [ ] Add `<vsock>` device to domain XML generation
+- [ ] Build a minimal guest agent binary that accepts vsock connections and proxies to local TCP ports
+- [ ] Ship guest agent via cloud-init (download or embed in seed ISO)
+- [ ] Host-side proxy: rum listens on configured host ports and forwards over vsock
+- [ ] Guest agent protocol: multiplexed connections with target port info
+- [ ] Discover CID from libvirt domain XML after define
+
+### Trade-offs
+
+- Requires a guest agent (scope increase vs. dual-NIC approach)
+- Only forwards explicitly configured ports (dual-NIC exposes all ports)
+- Guest agent needs to be built, shipped, and started inside the VM
 
 ## Research notes
 
@@ -53,11 +63,13 @@ The trade-off: Lima had to build all VM lifecycle management themselves. Libvirt
 
 ### Other approaches considered
 
-1. **SSH tunneling** — forward ports over SSH (`-L host:guest`). Simple, no root needed. Downside: requires SSH to be up first, adds latency.
-2. **iptables/nftables hook scripts** — `/etc/libvirt/hooks/qemu` script that adds DNAT rules on guest start/stop. Requires root, knowing the guest IP, managing firewall rules.
-3. **passt backend** — newer QEMU networking backend with built-in port forwarding, unprivileged. Libvirt supports it via `<interface type='passt'>` (libvirt 9.2+).
-4. **Drop libvirt, use QEMU directly** — full control over networking but lose all libvirt conveniences.
+1. **Dual-NIC (NAT + host-only bridge)** — separated into its own issue (`ab81286c`). Exposes all guest ports via a routable bridge IP with zero config. Simpler but less precise than port forwarding.
+2. **SSH tunneling** — forward ports over SSH (`-L host:guest`). Simple, no root needed. Downside: requires SSH to be up first, adds latency.
+3. **iptables/nftables hook scripts** — `/etc/libvirt/hooks/qemu` script that adds DNAT rules on guest start/stop. Requires root, knowing the guest IP, managing firewall rules.
+4. **passt backend** — newer QEMU networking backend with built-in port forwarding, unprivileged. Libvirt supports it via `<interface type='passt'>` (libvirt 9.2+).
+5. **Drop libvirt, use QEMU directly** — full control over networking but lose all libvirt conveniences.
 
 ## Related
 
+- Dual-NIC networking (`ab81286c`) — complementary approach for exposing all ports
 - `rum init` wizard (`e2b0661e`) includes a port forwarding prompt

@@ -35,3 +35,8 @@ pub fn domain_xml_path(name: &str) -> PathBuf {
 pub fn drive_path(vm_name: &str, drive_name: &str) -> PathBuf {
     work_dir(vm_name).join(format!("drive-{drive_name}.qcow2"))
 }
+
+/// Path to the networks state file for a VM.
+pub fn networks_state_path(name: &str) -> PathBuf {
+    work_dir(name).join("networks")
+}

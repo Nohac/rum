@@ -70,23 +70,37 @@ pub struct ResourcesConfig {
     pub memory_mb: u64,
 }
 
+#[derive(Debug, Clone, Default, Facet)]
+#[facet(default)]
+pub struct InterfaceConfig {
+    pub network: String,
+    #[facet(default)]
+    pub ip: String,
+}
+
 #[derive(Debug, Clone, Facet)]
 #[facet(default)]
 pub struct NetworkConfig {
+    #[facet(default = true)]
+    pub nat: bool,
     #[facet(default)]
     pub hostname: String,
     #[facet(default = true)]
     pub wait_for_ip: bool,
     #[facet(default = 120)]
     pub ip_wait_timeout_s: u64,
+    #[facet(default)]
+    pub interfaces: Vec<InterfaceConfig>,
 }
 
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
+            nat: true,
             hostname: String::new(),
             wait_for_ip: true,
             ip_wait_timeout_s: 120,
+            interfaces: Vec::new(),
         }
     }
 }
@@ -200,6 +214,15 @@ impl Config {
                         "drive '{name}' target must be absolute (got '{}')",
                         drive.target
                     ),
+                });
+            }
+        }
+
+        // Validate network interfaces
+        for iface in &self.network.interfaces {
+            if iface.network.is_empty() {
+                return Err(RumError::Validation {
+                    message: "network interface must have a non-empty network name".into(),
                 });
             }
         }
@@ -374,5 +397,56 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn empty_interface_network_rejected() {
+        let mut config = valid_config("test");
+        config.network.interfaces = vec![InterfaceConfig {
+            network: String::new(),
+            ip: String::new(),
+        }];
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn valid_interface_config() {
+        let mut config = valid_config("test");
+        config.network.interfaces = vec![InterfaceConfig {
+            network: "rum-hostonly".into(),
+            ip: "192.168.50.10".into(),
+        }];
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn parse_config_with_interfaces() {
+        let toml = r#"
+name = "test-vm"
+
+[image]
+base = "ubuntu.img"
+
+[resources]
+cpus = 1
+memory_mb = 512
+
+[network]
+nat = false
+
+[[network.interfaces]]
+network = "rum-hostonly"
+ip = "192.168.50.10"
+
+[[network.interfaces]]
+network = "dev-net"
+"#;
+        let config: Config = facet_toml::from_str(toml).unwrap();
+        assert!(!config.network.nat);
+        assert_eq!(config.network.interfaces.len(), 2);
+        assert_eq!(config.network.interfaces[0].network, "rum-hostonly");
+        assert_eq!(config.network.interfaces[0].ip, "192.168.50.10");
+        assert_eq!(config.network.interfaces[1].network, "dev-net");
+        assert!(config.network.interfaces[1].ip.is_empty());
     }
 }

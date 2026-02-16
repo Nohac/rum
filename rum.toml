@@ -7,6 +7,17 @@ base = "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd6
 cpus = 2
 memory_mb = 2048
 
+[network]
+nat = true                  # default: true — adds NAT NIC via "default" network
+hostname = "myhost"         # default: VM name
+
+[[network.interfaces]]
+network = "rum-hostonly"    # libvirt network name
+ip = "192.168.50.10"       # optional: DHCP reservation via stable MAC
+
+[[network.interfaces]]
+network = "dev-net"         # no ip = plain DHCP
+
 [provision]
 script = "echo 'Hello from rum!'"
 packages = ["curl", "inotify-tools"]

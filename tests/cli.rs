@@ -175,6 +175,43 @@ tag = "data"
 }
 
 #[test]
+fn config_with_network_interfaces() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("rum.toml");
+    let mut f = std::fs::File::create(&config_path).unwrap();
+    write!(
+        f,
+        r#"
+name = "multi-nic-vm"
+
+[image]
+base = "ubuntu-24.04"
+
+[resources]
+cpus = 2
+memory_mb = 2048
+
+[network]
+nat = true
+
+[[network.interfaces]]
+network = "rum-hostonly"
+ip = "192.168.50.10"
+
+[[network.interfaces]]
+network = "dev-net"
+"#
+    )
+    .unwrap();
+
+    rum()
+        .args(["--config", config_path.to_str().unwrap(), "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not defined"));
+}
+
+#[test]
 fn config_with_drives_section() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("rum.toml");
