@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::process::Stdio;
 
 use indicatif::ProgressBar;
@@ -7,7 +6,7 @@ use virt::domain::Domain;
 use virt::error as virt_error;
 use virt::network::Network;
 
-use crate::config::Config;
+use crate::config::SystemConfig;
 use crate::error::RumError;
 use crate::{cloudinit, domain_xml, image, network_xml, overlay, paths, qcow2};
 
@@ -29,13 +28,16 @@ impl Drop for ConnGuard {
 pub struct LibvirtBackend;
 
 impl super::Backend for LibvirtBackend {
-    async fn up(&self, config: &Config, config_path: &Path, reset: bool) -> Result<(), RumError> {
-        let name = &config.name;
-        let work = paths::work_dir(name);
-        let overlay_path = paths::overlay_path(name);
+    async fn up(&self, sys_config: &SystemConfig, reset: bool) -> Result<(), RumError> {
+        let id = &sys_config.id;
+        let name_opt = sys_config.name.as_deref();
+        let vm_name = sys_config.display_name();
+        let config = &sys_config.config;
+        let work = paths::work_dir(id, name_opt);
+        let overlay_path = paths::overlay_path(id, name_opt);
 
         // Resolve mounts and drives early so we fail fast on bad config
-        let mounts = config.resolve_mounts(config_path)?;
+        let mounts = sys_config.resolve_mounts()?;
         if !mounts.is_empty() {
             for m in &mounts {
                 tracing::info!(
@@ -48,7 +50,7 @@ impl super::Backend for LibvirtBackend {
             }
         }
 
-        let drives = config.resolve_drives()?;
+        let drives = sys_config.resolve_drives()?;
         if !drives.is_empty() {
             for d in &drives {
                 tracing::info!(
@@ -62,22 +64,22 @@ impl super::Backend for LibvirtBackend {
         }
 
         let seed_hash = cloudinit::seed_hash(
-            config.hostname(),
+            sys_config.hostname(),
             &config.provision.script,
             &config.provision.packages,
             &mounts,
             &drives,
         );
-        let seed_path = paths::seed_path(name, &seed_hash);
-        let xml_path = paths::domain_xml_path(name);
+        let seed_path = paths::seed_path(id, name_opt, &seed_hash);
+        let xml_path = paths::domain_xml_path(id, name_opt);
         let cache = paths::cache_dir();
 
-        let conn = connect(config)?;
+        let conn = connect(sys_config)?;
 
         // --reset: stop, undefine, wipe artifacts
         if reset {
-            tracing::info!(name, "resetting VM");
-            if let Ok(dom) = Domain::lookup_by_name(&conn, name) {
+            tracing::info!(vm_name, "resetting VM");
+            if let Ok(dom) = Domain::lookup_by_name(&conn, vm_name) {
                 let _ = shutdown_domain(&dom).await;
                 let _ = dom.undefine();
             }
@@ -108,8 +110,8 @@ impl super::Backend for LibvirtBackend {
             // Remove old seed ISOs with different hashes
             if let Ok(mut entries) = tokio::fs::read_dir(&work).await {
                 while let Ok(Some(entry)) = entries.next_entry().await {
-                    let name = entry.file_name();
-                    if let Some(s) = name.to_str()
+                    let fname = entry.file_name();
+                    if let Some(s) = fname.to_str()
                         && s.starts_with("seed-")
                         && s.ends_with(".iso")
                     {
@@ -119,7 +121,7 @@ impl super::Backend for LibvirtBackend {
             }
             cloudinit::generate_seed_iso(
                 &seed_path,
-                config.hostname(),
+                sys_config.hostname(),
                 &config.provision.script,
                 &config.provision.packages,
                 &mounts,
@@ -128,16 +130,21 @@ impl super::Backend for LibvirtBackend {
         }
 
         // 4. Generate domain XML
-        let xml =
-            domain_xml::generate_domain_xml(config, &overlay_path, &seed_path, &mounts, &drives);
+        let xml = domain_xml::generate_domain_xml(
+            sys_config,
+            &overlay_path,
+            &seed_path,
+            &mounts,
+            &drives,
+        );
 
         // 5. Define or redefine domain
         println!("Configuring VM...");
-        let existing = Domain::lookup_by_name(&conn, name);
+        let existing = Domain::lookup_by_name(&conn, vm_name);
         match existing {
             Ok(dom) => {
                 if domain_xml::xml_has_changed(
-                    config,
+                    sys_config,
                     &overlay_path,
                     &seed_path,
                     &mounts,
@@ -145,19 +152,21 @@ impl super::Backend for LibvirtBackend {
                     &xml_path,
                 ) {
                     if is_running(&dom) {
-                        return Err(RumError::RequiresRestart { name: name.clone() });
+                        return Err(RumError::RequiresRestart {
+                            name: vm_name.to_string(),
+                        });
                     }
                     dom.undefine().map_err(|e| RumError::Libvirt {
                         message: format!("failed to undefine domain: {e}"),
                         hint: "check libvirt permissions".into(),
                     })?;
                     define_domain(&conn, &xml)?;
-                    tracing::info!(name, "domain redefined with updated config");
+                    tracing::info!(vm_name, "domain redefined with updated config");
                 }
             }
             Err(_) => {
                 define_domain(&conn, &xml)?;
-                tracing::info!(name, "domain defined");
+                tracing::info!(vm_name, "domain defined");
             }
         }
 
@@ -169,12 +178,24 @@ impl super::Backend for LibvirtBackend {
                 source: e,
             })?;
 
+        // Write config_path file for stale state detection
+        let cp_file = paths::config_path_file(id, name_opt);
+        tokio::fs::write(
+            &cp_file,
+            sys_config.config_path.to_string_lossy().as_bytes(),
+        )
+        .await
+        .map_err(|e| RumError::Io {
+            context: format!("saving config path to {}", cp_file.display()),
+            source: e,
+        })?;
+
         // 6. Ensure networks are active
         println!("Checking network...");
-        ensure_networks(&conn, config)?;
+        ensure_networks(&conn, sys_config)?;
 
         // 7. Start if not running
-        let dom = Domain::lookup_by_name(&conn, name).map_err(|e| RumError::Libvirt {
+        let dom = Domain::lookup_by_name(&conn, vm_name).map_err(|e| RumError::Libvirt {
             message: format!("domain lookup failed: {e}"),
             hint: "domain should have been defined above".into(),
         })?;
@@ -185,9 +206,9 @@ impl super::Backend for LibvirtBackend {
                 message: format!("failed to start domain: {e}"),
                 hint: "check `virsh -c qemu:///system start` for details".into(),
             })?;
-            tracing::info!(name, "VM started");
+            tracing::info!(vm_name, "VM started");
         } else {
-            tracing::info!(name, "VM already running");
+            tracing::info!(vm_name, "VM already running");
         }
 
         drop(conn);
@@ -195,7 +216,7 @@ impl super::Backend for LibvirtBackend {
         // 7. Attach serial console via virsh
         println!("Attaching console (press Ctrl+C or Ctrl+] to detach)...");
         let mut child = tokio::process::Command::new("virsh")
-            .args(["-c", config.libvirt_uri(), "console", name])
+            .args(["-c", sys_config.libvirt_uri(), "console", vm_name])
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -226,20 +247,21 @@ impl super::Backend for LibvirtBackend {
         Ok(())
     }
 
-    async fn down(&self, config: &Config) -> Result<(), RumError> {
-        let name = &config.name;
-        let conn = connect(config)?;
+    async fn down(&self, sys_config: &SystemConfig) -> Result<(), RumError> {
+        let vm_name = sys_config.display_name();
+        let conn = connect(sys_config)?;
 
-        let dom = Domain::lookup_by_name(&conn, name)
-            .map_err(|_| RumError::DomainNotFound { name: name.clone() })?;
+        let dom = Domain::lookup_by_name(&conn, vm_name).map_err(|_| RumError::DomainNotFound {
+            name: vm_name.to_string(),
+        })?;
 
         if !is_running(&dom) {
-            println!("VM '{name}' is not running.");
+            println!("VM '{vm_name}' is not running.");
             return Ok(());
         }
 
         // ACPI shutdown
-        tracing::info!(name, "sending ACPI shutdown");
+        tracing::info!(vm_name, "sending ACPI shutdown");
         dom.shutdown().map_err(|e| RumError::Libvirt {
             message: format!("shutdown failed: {e}"),
             hint: "VM may not have ACPI support".into(),
@@ -247,12 +269,12 @@ impl super::Backend for LibvirtBackend {
 
         // Wait up to 30s for shutdown
         let spinner = ProgressBar::new_spinner();
-        spinner.set_message(format!("Waiting for VM '{name}' to shut down..."));
+        spinner.set_message(format!("Waiting for VM '{vm_name}' to shut down..."));
         spinner.enable_steady_tick(std::time::Duration::from_millis(120));
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
             if !is_running(&dom) {
-                spinner.finish_with_message(format!("VM '{name}' stopped."));
+                spinner.finish_with_message(format!("VM '{vm_name}' stopped."));
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {
@@ -264,50 +286,49 @@ impl super::Backend for LibvirtBackend {
         }
 
         // Force stop
-        tracing::warn!(name, "ACPI shutdown timed out, force stopping");
+        tracing::warn!(vm_name, "ACPI shutdown timed out, force stopping");
         dom.destroy().map_err(|e| RumError::Libvirt {
             message: format!("force stop failed: {e}"),
             hint: "check libvirt permissions".into(),
         })?;
-        println!("VM '{name}' force stopped.");
+        println!("VM '{vm_name}' force stopped.");
 
         Ok(())
     }
 
-    async fn destroy(&self, config: &Config, purge: bool) -> Result<(), RumError> {
-        let name = &config.name;
-        let conn = connect(config)?;
+    async fn destroy(&self, sys_config: &SystemConfig, purge: bool) -> Result<(), RumError> {
+        let id = &sys_config.id;
+        let name_opt = sys_config.name.as_deref();
+        let vm_name = sys_config.display_name();
+        let config = &sys_config.config;
+        let conn = connect(sys_config)?;
 
-        if let Ok(dom) = Domain::lookup_by_name(&conn, name) {
+        if let Ok(dom) = Domain::lookup_by_name(&conn, vm_name) {
             if is_running(&dom) {
-                tracing::info!(name, "stopping VM before destroy");
+                tracing::info!(vm_name, "stopping VM before destroy");
                 let _ = dom.destroy();
             }
             dom.undefine().map_err(|e| RumError::Libvirt {
                 message: format!("failed to undefine domain: {e}"),
                 hint: "check libvirt permissions".into(),
             })?;
-            tracing::info!(name, "domain undefined");
+            tracing::info!(vm_name, "domain undefined");
         }
 
-        // Tear down auto-created networks
-        let networks_state = paths::networks_state_path(name);
-        if networks_state.exists()
-            && let Ok(contents) = std::fs::read_to_string(&networks_state)
-        {
-            for net_name in contents.lines().filter(|l| !l.is_empty()) {
-                if let Ok(net) = Network::lookup_by_name(&conn, net_name) {
-                    if net.is_active().unwrap_or(false) {
-                        let _ = net.destroy();
-                    }
-                    let _ = net.undefine();
-                    tracing::info!(net_name, "removed network");
+        // Tear down auto-created networks (derived from id + interface names)
+        for iface in &config.network.interfaces {
+            let net_name = network_xml::prefixed_name(id, &iface.network);
+            if let Ok(net) = Network::lookup_by_name(&conn, &net_name) {
+                if net.is_active().unwrap_or(false) {
+                    let _ = net.destroy();
                 }
+                let _ = net.undefine();
+                tracing::info!(net_name, "removed network");
             }
         }
 
         // Remove work dir
-        let work = paths::work_dir(name);
+        let work = paths::work_dir(id, name_opt);
         if work.exists() {
             tokio::fs::remove_dir_all(&work)
                 .await
@@ -332,22 +353,22 @@ impl super::Backend for LibvirtBackend {
             }
         }
 
-        println!("VM '{name}' destroyed.");
+        println!("VM '{vm_name}' destroyed.");
         Ok(())
     }
 
-    async fn status(&self, config: &Config) -> Result<(), RumError> {
-        let name = &config.name;
-        let conn = connect(config)?;
+    async fn status(&self, sys_config: &SystemConfig) -> Result<(), RumError> {
+        let vm_name = sys_config.display_name();
+        let conn = connect(sys_config)?;
 
-        match Domain::lookup_by_name(&conn, name) {
+        match Domain::lookup_by_name(&conn, vm_name) {
             Ok(dom) => {
                 let state = if is_running(&dom) {
                     "running"
                 } else {
                     "stopped"
                 };
-                println!("VM '{name}': {state}");
+                println!("VM '{vm_name}': {state}");
 
                 if is_running(&dom) {
                     // Try to get IP from DHCP leases
@@ -368,7 +389,7 @@ impl super::Backend for LibvirtBackend {
                 }
             }
             Err(_) => {
-                println!("VM '{name}': not defined");
+                println!("VM '{vm_name}': not defined");
             }
         }
 
@@ -376,19 +397,19 @@ impl super::Backend for LibvirtBackend {
     }
 }
 
-fn connect(config: &Config) -> Result<ConnGuard, RumError> {
+fn connect(sys_config: &SystemConfig) -> Result<ConnGuard, RumError> {
     // Suppress libvirt's default error handler that prints to stderr.
     // This installs a no-op callback so errors are only surfaced through
     // Rust's Result types, not printed to stderr by the C library.
     virt_error::clear_error_callback();
 
-    Connect::open(Some(config.libvirt_uri()))
+    Connect::open(Some(sys_config.libvirt_uri()))
         .map(ConnGuard)
         .map_err(|e| RumError::Libvirt {
             message: format!("failed to connect to libvirt: {e}"),
             hint: format!(
                 "ensure libvirtd is running and you have access to {}",
-                config.libvirt_uri()
+                sys_config.libvirt_uri()
             ),
         })
 }
@@ -419,11 +440,7 @@ fn ensure_network_active(conn: &Connect, name: &str) -> Result<Network, RumError
 
 /// Ensure an extra (non-NAT) network exists and is active.
 /// Auto-creates it as a host-only network if it doesn't exist.
-fn ensure_extra_network(
-    conn: &Connect,
-    name: &str,
-    ip_hint: &str,
-) -> Result<Network, RumError> {
+fn ensure_extra_network(conn: &Connect, name: &str, ip_hint: &str) -> Result<Network, RumError> {
     match Network::lookup_by_name(conn, name) {
         Ok(net) => {
             if !net.is_active().unwrap_or(false) {
@@ -440,11 +457,10 @@ fn ensure_extra_network(
             let subnet = network_xml::derive_subnet(name, ip_hint);
             let xml = network_xml::generate_network_xml(name, &subnet);
             tracing::info!(name, subnet, "auto-creating host-only network");
-            let net =
-                Network::define_xml(conn, &xml).map_err(|e| RumError::Libvirt {
-                    message: format!("failed to define network '{name}': {e}"),
-                    hint: "check libvirt permissions".into(),
-                })?;
+            let net = Network::define_xml(conn, &xml).map_err(|e| RumError::Libvirt {
+                message: format!("failed to define network '{name}': {e}"),
+                hint: "check libvirt permissions".into(),
+            })?;
             net.create().map_err(|e| RumError::Libvirt {
                 message: format!("failed to start network '{name}': {e}"),
                 hint: "check libvirt permissions".into(),
@@ -454,32 +470,21 @@ fn ensure_extra_network(
     }
 }
 
-fn ensure_networks(conn: &Connect, config: &Config) -> Result<(), RumError> {
+fn ensure_networks(conn: &Connect, sys_config: &SystemConfig) -> Result<(), RumError> {
+    let config = &sys_config.config;
+
     if config.network.nat {
         ensure_network_active(conn, "default")?;
     }
 
-    let prefix = network_xml::network_prefix(&config.name);
-    let mut created_networks = Vec::new();
-
     for (i, iface) in config.network.interfaces.iter().enumerate() {
-        let libvirt_name = network_xml::prefixed_name(&prefix, &iface.network);
+        let libvirt_name = network_xml::prefixed_name(&sys_config.id, &iface.network);
         let net = ensure_extra_network(conn, &libvirt_name, &iface.ip)?;
-        created_networks.push(libvirt_name.clone());
 
         if !iface.ip.is_empty() {
-            let mac = crate::domain_xml::generate_mac(&config.name, i);
-            add_dhcp_reservation(&net, &libvirt_name, &mac, &iface.ip, config.hostname())?;
+            let mac = crate::domain_xml::generate_mac(sys_config.display_name(), i);
+            add_dhcp_reservation(&net, &libvirt_name, &mac, &iface.ip, sys_config.hostname())?;
         }
-    }
-
-    // Save created network names for cleanup on destroy
-    if !created_networks.is_empty() {
-        let state_path = paths::networks_state_path(&config.name);
-        std::fs::write(&state_path, created_networks.join("\n")).map_err(|e| RumError::Io {
-            context: format!("saving network state to {}", state_path.display()),
-            source: e,
-        })?;
     }
 
     Ok(())
@@ -493,15 +498,13 @@ fn add_dhcp_reservation(
     ip: &str,
     hostname: &str,
 ) -> Result<(), RumError> {
-    let host_xml = format!(
-        "<host mac='{mac}' name='{hostname}' ip='{ip}'/>",
-    );
+    let host_xml = format!("<host mac='{mac}' name='{hostname}' ip='{ip}'/>",);
 
     // Try to update existing reservation first (modify), fall back to add
     let modify = virt::sys::VIR_NETWORK_UPDATE_COMMAND_ADD_LAST;
     let section = virt::sys::VIR_NETWORK_SECTION_IP_DHCP_HOST;
-    let flags = virt::sys::VIR_NETWORK_UPDATE_AFFECT_LIVE
-        | virt::sys::VIR_NETWORK_UPDATE_AFFECT_CONFIG;
+    let flags =
+        virt::sys::VIR_NETWORK_UPDATE_AFFECT_LIVE | virt::sys::VIR_NETWORK_UPDATE_AFFECT_CONFIG;
 
     match net.update(modify, section, -1, &host_xml, flags) {
         Ok(_) => {
@@ -515,9 +518,7 @@ fn add_dhcp_reservation(
                     message: format!(
                         "failed to set DHCP reservation in '{net_name}': add={e}, modify={e2}"
                     ),
-                    hint: format!(
-                        "ensure network '{net_name}' has a DHCP range configured"
-                    ),
+                    hint: format!("ensure network '{net_name}' has a DHCP range configured"),
                 })?;
             tracing::info!(net_name, mac, ip, "updated DHCP reservation");
         }

@@ -1,10 +1,8 @@
-name = "test-vm"
-
 [image]
 base = "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
 
 [resources]
-cpus = 2
+cpus = 4
 memory_mb = 2048
 
 [network]

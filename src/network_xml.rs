@@ -36,22 +36,10 @@ struct DhcpRange {
 
 // ── naming ─────────────────────────────────────────────────
 
-/// Generate a short (8 hex char) ID deterministically from the VM name.
-/// Used to prefix auto-created libvirt network names so they can be
-/// identified and cleaned up on destroy.
-pub fn network_prefix(vm_name: &str) -> String {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for b in vm_name.bytes() {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{:08x}", hash as u32)
-}
-
-/// Build the actual libvirt network name from prefix and config name.
+/// Build the libvirt network name from the VM's config id and the interface network name.
 /// E.g. `rum-a1b2c3d4-hostonly`
-pub fn prefixed_name(prefix: &str, config_network: &str) -> String {
-    format!("rum-{prefix}-{config_network}")
+pub fn prefixed_name(id: &str, config_network: &str) -> String {
+    format!("rum-{id}-{config_network}")
 }
 
 // ── public API ─────────────────────────────────────────────

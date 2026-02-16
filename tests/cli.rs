@@ -12,8 +12,6 @@ fn write_test_config(dir: &tempfile::TempDir) -> std::path::PathBuf {
     write!(
         f,
         r#"
-name = "test-vm"
-
 [image]
 base = "ubuntu-24.04"
 
@@ -33,35 +31,6 @@ fn help_works() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Lightweight VM provisioning"));
-}
-
-#[test]
-fn validation_rejects_empty_name() {
-    let dir = tempfile::tempdir().unwrap();
-    let config_path = dir.path().join("rum.toml");
-    let mut f = std::fs::File::create(&config_path).unwrap();
-    write!(
-        f,
-        r#"
-name = ""
-
-[image]
-base = "ubuntu-24.04"
-
-[resources]
-cpus = 2
-memory_mb = 2048
-"#
-    )
-    .unwrap();
-
-    rum()
-        .args(["--config", config_path.to_str().unwrap(), "up"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "name must match [a-zA-Z0-9][a-zA-Z0-9._-]*",
-        ));
 }
 
 #[test]
@@ -105,8 +74,6 @@ fn config_with_optional_sections() {
     write!(
         f,
         r#"
-name = "full-vm"
-
 [image]
 base = "ubuntu-24.04"
 
@@ -144,8 +111,6 @@ fn config_with_mounts_section() {
     write!(
         f,
         r#"
-name = "mount-vm"
-
 [image]
 base = "ubuntu-24.04"
 
@@ -182,8 +147,6 @@ fn config_with_network_interfaces() {
     write!(
         f,
         r#"
-name = "multi-nic-vm"
-
 [image]
 base = "ubuntu-24.04"
 
@@ -219,8 +182,6 @@ fn config_with_drives_section() {
     write!(
         f,
         r#"
-name = "drive-vm"
-
 [image]
 base = "ubuntu-24.04"
 
@@ -243,4 +204,30 @@ size = "50G"
         .assert()
         .success()
         .stdout(predicate::str::contains("not defined"));
+}
+
+#[test]
+fn named_config_derives_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("dev.rum.toml");
+    let mut f = std::fs::File::create(&config_path).unwrap();
+    write!(
+        f,
+        r#"
+[image]
+base = "ubuntu-24.04"
+
+[resources]
+cpus = 1
+memory_mb = 512
+"#
+    )
+    .unwrap();
+
+    // Status output should use the derived name "dev"
+    rum()
+        .args(["--config", config_path.to_str().unwrap(), "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("'dev'"));
 }
