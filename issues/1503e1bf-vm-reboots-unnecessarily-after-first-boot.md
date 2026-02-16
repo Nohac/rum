@@ -1,6 +1,6 @@
 # VM reboots unnecessarily after first boot
 
-**ID:** 1503e1bf | **Status:** Open | **Created:** 2026-02-15T20:47:30+01:00
+**ID:** 1503e1bf | **Status:** Done | **Created:** 2026-02-15T20:47:30+01:00
 
 On first boot, the VM completes initial setup and logs in via serial console correctly, but then appears to reboot/restart and logs in a second time. This is unnecessary and confusing.
 
