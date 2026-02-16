@@ -547,14 +547,12 @@ memory_mb = 512
                 name: "data".into(),
                 size: "20G".into(),
                 path: PathBuf::from("/home/user/.local/share/rum/test-vm/drive-data.qcow2"),
-                target: Some("/mnt/data".into()),
                 dev: "vdb".into(),
             },
             ResolvedDrive {
                 name: "scratch".into(),
                 size: "50G".into(),
                 path: PathBuf::from("/home/user/.local/share/rum/test-vm/drive-scratch.qcow2"),
-                target: None,
                 dev: "vdc".into(),
             },
         ];

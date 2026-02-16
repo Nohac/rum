@@ -57,11 +57,12 @@ impl super::Backend for LibvirtBackend {
                     name = %d.name,
                     size = %d.size,
                     dev = %d.dev,
-                    target = d.target.as_deref().unwrap_or("(none)"),
                     "extra drive"
                 );
             }
         }
+
+        let resolved_fs = sys_config.resolve_fs(&drives);
 
         let seed_hash = cloudinit::seed_hash(
             sys_config.hostname(),
@@ -69,6 +70,7 @@ impl super::Backend for LibvirtBackend {
             &config.provision.packages,
             &mounts,
             &drives,
+            &resolved_fs,
         );
         let seed_path = paths::seed_path(id, name_opt, &seed_hash);
         let xml_path = paths::domain_xml_path(id, name_opt);
@@ -125,6 +127,7 @@ impl super::Backend for LibvirtBackend {
                 &config.provision.script,
                 &config.provision.packages,
                 &mounts,
+                &resolved_fs,
             )
             .await?;
         }

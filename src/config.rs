@@ -29,8 +29,6 @@ pub struct ResolvedMount {
 #[facet(default)]
 pub struct DriveConfig {
     pub size: String,
-    #[facet(default)]
-    pub target: String,
 }
 
 #[derive(Debug, Clone)]
@@ -38,8 +36,51 @@ pub struct ResolvedDrive {
     pub name: String,
     pub size: String,
     pub path: PathBuf,
-    pub target: Option<String>,
     pub dev: String,
+}
+
+#[derive(Debug, Clone, Default, Facet)]
+#[facet(default)]
+pub struct FsEntryConfig {
+    #[facet(default)]
+    pub drive: String,
+    #[facet(default)]
+    pub drives: Vec<String>,
+    #[facet(default)]
+    pub target: String,
+    #[facet(default)]
+    pub mode: String,
+    #[facet(default)]
+    pub pool: String,
+}
+
+#[derive(Debug, Clone, Hash)]
+pub enum ResolvedFs {
+    Zfs(ZfsFs),
+    Btrfs(BtrfsFs),
+    Simple(SimpleFs),
+}
+
+#[derive(Debug, Clone, Hash)]
+pub struct ZfsFs {
+    pub pool: String,
+    pub devs: Vec<String>,
+    pub target: String,
+    pub mode: String,
+}
+
+#[derive(Debug, Clone, Hash)]
+pub struct BtrfsFs {
+    pub devs: Vec<String>,
+    pub target: String,
+    pub mode: String,
+}
+
+#[derive(Debug, Clone, Hash)]
+pub struct SimpleFs {
+    pub filesystem: String,
+    pub dev: String,
+    pub target: String,
 }
 
 #[derive(Debug, Clone, Facet)]
@@ -56,6 +97,8 @@ pub struct Config {
     pub mounts: Vec<MountConfig>,
     #[facet(default)]
     pub drives: BTreeMap<String, DriveConfig>,
+    #[facet(default)]
+    pub fs: BTreeMap<String, Vec<FsEntryConfig>>,
 }
 
 #[derive(Debug, Clone, Facet)]
@@ -182,11 +225,6 @@ impl SystemConfig {
                 name: name.clone(),
                 size: drive.size.clone(),
                 path: paths::drive_path(&self.id, self.name.as_deref(), name),
-                target: if drive.target.is_empty() {
-                    None
-                } else {
-                    Some(drive.target.clone())
-                },
                 dev,
             });
         }
@@ -265,6 +303,70 @@ impl SystemConfig {
 
         Ok(resolved)
     }
+
+    /// Resolve filesystem entries by mapping drive names to device paths.
+    ///
+    /// Must be called after `resolve_drives()` — uses the resolved drives
+    /// to look up device names (vdb, vdc, ...).
+    pub fn resolve_fs(&self, drives: &[ResolvedDrive]) -> Vec<ResolvedFs> {
+        let drive_map: std::collections::HashMap<&str, &str> = drives
+            .iter()
+            .map(|d| (d.name.as_str(), d.dev.as_str()))
+            .collect();
+
+        let mut resolved = Vec::new();
+        for (fs_type, entries) in &self.config.fs {
+            for entry in entries {
+                match fs_type.as_str() {
+                    "zfs" => {
+                        let devs = entry
+                            .drives
+                            .iter()
+                            .map(|name| format!("/dev/{}", drive_map[name.as_str()]))
+                            .collect();
+                        let pool = if entry.pool.is_empty() {
+                            entry.drives[0].clone()
+                        } else {
+                            entry.pool.clone()
+                        };
+                        resolved.push(ResolvedFs::Zfs(ZfsFs {
+                            pool,
+                            devs,
+                            target: entry.target.clone(),
+                            mode: entry.mode.clone(),
+                        }));
+                    }
+                    "btrfs" => {
+                        let devs = entry
+                            .drives
+                            .iter()
+                            .map(|name| format!("/dev/{}", drive_map[name.as_str()]))
+                            .collect();
+                        let mode = if entry.mode.is_empty() {
+                            "single".into()
+                        } else {
+                            entry.mode.clone()
+                        };
+                        resolved.push(ResolvedFs::Btrfs(BtrfsFs {
+                            devs,
+                            target: entry.target.clone(),
+                            mode,
+                        }));
+                    }
+                    _ => {
+                        let dev =
+                            format!("/dev/{}", drive_map[entry.drive.as_str()]);
+                        resolved.push(ResolvedFs::Simple(SimpleFs {
+                            filesystem: fs_type.clone(),
+                            dev,
+                            target: entry.target.clone(),
+                        }));
+                    }
+                }
+            }
+        }
+        resolved
+    }
 }
 
 // ── validation ────────────────────────────────────────────
@@ -312,13 +414,126 @@ fn validate_config(config: &Config) -> Result<(), RumError> {
                 message: format!("drive '{name}' must have a size"),
             });
         }
-        if !drive.target.is_empty() && !drive.target.starts_with('/') {
-            return Err(RumError::Validation {
-                message: format!(
-                    "drive '{name}' target must be absolute (got '{}')",
-                    drive.target
-                ),
-            });
+    }
+
+    // Validate filesystem entries
+    let mut used_drives = std::collections::HashSet::new();
+    for (fs_type, entries) in &config.fs {
+        for (idx, entry) in entries.iter().enumerate() {
+            let label = format!("fs.{fs_type}[{idx}]");
+
+            if entry.target.is_empty() {
+                return Err(RumError::Validation {
+                    message: format!("{label}: target is required"),
+                });
+            }
+            if !entry.target.starts_with('/') {
+                return Err(RumError::Validation {
+                    message: format!("{label}: target must be absolute (got '{}')", entry.target),
+                });
+            }
+
+            match fs_type.as_str() {
+                "zfs" => {
+                    if entry.drives.is_empty() {
+                        return Err(RumError::Validation {
+                            message: format!("{label}: zfs requires 'drives' (list of drive names)"),
+                        });
+                    }
+                    if !entry.drive.is_empty() {
+                        return Err(RumError::Validation {
+                            message: format!("{label}: zfs uses 'drives', not 'drive'"),
+                        });
+                    }
+                    for d in &entry.drives {
+                        if !config.drives.contains_key(d) {
+                            return Err(RumError::Validation {
+                                message: format!("{label}: drive '{d}' not found in [drives]"),
+                            });
+                        }
+                        if !used_drives.insert(d.as_str()) {
+                            return Err(RumError::Validation {
+                                message: format!(
+                                    "{label}: drive '{d}' is already used by another fs entry"
+                                ),
+                            });
+                        }
+                    }
+                }
+                "btrfs" => {
+                    if entry.drives.is_empty() {
+                        return Err(RumError::Validation {
+                            message: format!(
+                                "{label}: btrfs requires 'drives' (list of drive names)"
+                            ),
+                        });
+                    }
+                    if !entry.drive.is_empty() {
+                        return Err(RumError::Validation {
+                            message: format!("{label}: btrfs uses 'drives', not 'drive'"),
+                        });
+                    }
+                    if !entry.pool.is_empty() {
+                        return Err(RumError::Validation {
+                            message: format!("{label}: 'pool' is only valid for zfs"),
+                        });
+                    }
+                    for d in &entry.drives {
+                        if !config.drives.contains_key(d) {
+                            return Err(RumError::Validation {
+                                message: format!("{label}: drive '{d}' not found in [drives]"),
+                            });
+                        }
+                        if !used_drives.insert(d.as_str()) {
+                            return Err(RumError::Validation {
+                                message: format!(
+                                    "{label}: drive '{d}' is already used by another fs entry"
+                                ),
+                            });
+                        }
+                    }
+                }
+                _ => {
+                    if entry.drive.is_empty() {
+                        return Err(RumError::Validation {
+                            message: format!(
+                                "{label}: '{fs_type}' requires 'drive' (single drive name)"
+                            ),
+                        });
+                    }
+                    if !entry.drives.is_empty() {
+                        return Err(RumError::Validation {
+                            message: format!("{label}: '{fs_type}' uses 'drive', not 'drives'"),
+                        });
+                    }
+                    if !entry.mode.is_empty() {
+                        return Err(RumError::Validation {
+                            message: format!("{label}: 'mode' is only valid for zfs/btrfs"),
+                        });
+                    }
+                    if !entry.pool.is_empty() {
+                        return Err(RumError::Validation {
+                            message: format!("{label}: 'pool' is only valid for zfs"),
+                        });
+                    }
+                    if !config.drives.contains_key(&entry.drive) {
+                        return Err(RumError::Validation {
+                            message: format!(
+                                "{label}: drive '{}' not found in [drives]",
+                                entry.drive
+                            ),
+                        });
+                    }
+                    if !used_drives.insert(entry.drive.as_str()) {
+                        return Err(RumError::Validation {
+                            message: format!(
+                                "{label}: drive '{}' is already used by another fs entry",
+                                entry.drive
+                            ),
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -440,6 +655,7 @@ pub mod tests {
             advanced: AdvancedConfig::default(),
             mounts: vec![],
             drives: BTreeMap::new(),
+            fs: BTreeMap::new(),
         }
     }
 
@@ -597,5 +813,196 @@ network = "dev-net"
         let mut sc = test_system_config();
         sc.config.network.hostname = "custom-host".into();
         assert_eq!(sc.hostname(), "custom-host");
+    }
+
+    #[test]
+    fn parse_config_with_fs_ext4() {
+        let toml = r#"
+[image]
+base = "ubuntu.img"
+
+[resources]
+cpus = 1
+memory_mb = 512
+
+[drives.data]
+size = "20G"
+
+[[fs.ext4]]
+drive = "data"
+target = "/mnt/data"
+"#;
+        let config: Config = facet_toml::from_str(toml).unwrap();
+        validate_config(&config).unwrap();
+        assert_eq!(config.fs.len(), 1);
+        assert_eq!(config.fs["ext4"][0].drive, "data");
+        assert_eq!(config.fs["ext4"][0].target, "/mnt/data");
+    }
+
+    #[test]
+    fn parse_config_with_fs_zfs() {
+        let toml = r#"
+[image]
+base = "ubuntu.img"
+
+[resources]
+cpus = 1
+memory_mb = 512
+
+[drives.logs1]
+size = "50G"
+
+[drives.logs2]
+size = "50G"
+
+[[fs.zfs]]
+drives = ["logs1", "logs2"]
+target = "/mnt/logs"
+mode = "mirror"
+pool = "logspool"
+"#;
+        let config: Config = facet_toml::from_str(toml).unwrap();
+        validate_config(&config).unwrap();
+        assert_eq!(config.fs["zfs"][0].drives, vec!["logs1", "logs2"]);
+        assert_eq!(config.fs["zfs"][0].mode, "mirror");
+        assert_eq!(config.fs["zfs"][0].pool, "logspool");
+    }
+
+    #[test]
+    fn fs_missing_target_rejected() {
+        let mut config = valid_config();
+        config.drives.insert("d".into(), DriveConfig { size: "10G".into() });
+        config.fs.insert(
+            "ext4".into(),
+            vec![FsEntryConfig {
+                drive: "d".into(),
+                target: String::new(),
+                ..Default::default()
+            }],
+        );
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn fs_nonexistent_drive_rejected() {
+        let mut config = valid_config();
+        config.fs.insert(
+            "ext4".into(),
+            vec![FsEntryConfig {
+                drive: "nonexistent".into(),
+                target: "/mnt/data".into(),
+                ..Default::default()
+            }],
+        );
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn fs_duplicate_drive_rejected() {
+        let mut config = valid_config();
+        config.drives.insert("d".into(), DriveConfig { size: "10G".into() });
+        config.fs.insert(
+            "ext4".into(),
+            vec![
+                FsEntryConfig {
+                    drive: "d".into(),
+                    target: "/mnt/a".into(),
+                    ..Default::default()
+                },
+                FsEntryConfig {
+                    drive: "d".into(),
+                    target: "/mnt/b".into(),
+                    ..Default::default()
+                },
+            ],
+        );
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn fs_simple_with_drives_rejected() {
+        let mut config = valid_config();
+        config.drives.insert("d".into(), DriveConfig { size: "10G".into() });
+        config.fs.insert(
+            "ext4".into(),
+            vec![FsEntryConfig {
+                drives: vec!["d".into()],
+                target: "/mnt/data".into(),
+                ..Default::default()
+            }],
+        );
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn fs_zfs_with_drive_rejected() {
+        let mut config = valid_config();
+        config.drives.insert("d".into(), DriveConfig { size: "10G".into() });
+        config.fs.insert(
+            "zfs".into(),
+            vec![FsEntryConfig {
+                drive: "d".into(),
+                target: "/mnt/data".into(),
+                ..Default::default()
+            }],
+        );
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn resolve_fs_simple() {
+        let mut sc = test_system_config();
+        sc.config.drives.insert("data".into(), DriveConfig { size: "20G".into() });
+        sc.config.fs.insert(
+            "ext4".into(),
+            vec![FsEntryConfig {
+                drive: "data".into(),
+                target: "/mnt/data".into(),
+                ..Default::default()
+            }],
+        );
+        let drives = sc.resolve_drives().unwrap();
+        let fs = sc.resolve_fs(&drives);
+        assert_eq!(fs.len(), 1);
+        match &fs[0] {
+            ResolvedFs::Simple(s) => {
+                assert_eq!(s.filesystem, "ext4");
+                assert_eq!(s.dev, "/dev/vdb");
+                assert_eq!(s.target, "/mnt/data");
+            }
+            _ => panic!("expected Simple"),
+        }
+    }
+
+    #[test]
+    fn resolve_fs_zfs() {
+        let mut sc = test_system_config();
+        sc.config
+            .drives
+            .insert("logs1".into(), DriveConfig { size: "50G".into() });
+        sc.config
+            .drives
+            .insert("logs2".into(), DriveConfig { size: "50G".into() });
+        sc.config.fs.insert(
+            "zfs".into(),
+            vec![FsEntryConfig {
+                drives: vec!["logs1".into(), "logs2".into()],
+                target: "/mnt/logs".into(),
+                mode: "mirror".into(),
+                ..Default::default()
+            }],
+        );
+        let drives = sc.resolve_drives().unwrap();
+        let fs = sc.resolve_fs(&drives);
+        assert_eq!(fs.len(), 1);
+        match &fs[0] {
+            ResolvedFs::Zfs(z) => {
+                assert_eq!(z.pool, "logs1"); // defaults to first drive name
+                assert_eq!(z.devs.len(), 2);
+                assert_eq!(z.mode, "mirror");
+                assert_eq!(z.target, "/mnt/logs");
+            }
+            _ => panic!("expected Zfs"),
+        }
     }
 }

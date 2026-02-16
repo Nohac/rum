@@ -191,10 +191,53 @@ memory_mb = 2048
 
 [drives.data]
 size = "20G"
-target = "/mnt/data"
 
 [drives.scratch]
 size = "50G"
+"#
+    )
+    .unwrap();
+
+    rum()
+        .args(["--config", config_path.to_str().unwrap(), "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not defined"));
+}
+
+#[test]
+fn config_with_fs_section() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("rum.toml");
+    let mut f = std::fs::File::create(&config_path).unwrap();
+    write!(
+        f,
+        r#"
+[image]
+base = "ubuntu-24.04"
+
+[resources]
+cpus = 2
+memory_mb = 2048
+
+[drives.data]
+size = "20G"
+
+[drives.logs1]
+size = "50G"
+
+[drives.logs2]
+size = "50G"
+
+[[fs.ext4]]
+drive = "data"
+target = "/mnt/data"
+
+[[fs.zfs]]
+drives = ["logs1", "logs2"]
+target = "/mnt/logs"
+mode = "mirror"
+pool = "logspool"
 "#
     )
     .unwrap();

@@ -28,4 +28,19 @@ tag = "project"            # default: auto-generated from target
 
 [drives.data]
 size = "10G"
-target = "/mnt/data"       # optional: for future auto-mount
+
+[drives.logs1]
+size = "50G"
+
+[drives.logs2]
+size = "50G"
+
+[[fs.ext4]]
+drive = "data"
+target = "/mnt/data"
+
+[[fs.zfs]]
+drives = ["logs1", "logs2"]
+target = "/mnt/logs"
+mode = "mirror"                # optional: mirror, raidz, raidz2, stripe (default)
+pool = "logspool"              # optional: defaults to first drive name

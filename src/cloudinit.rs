@@ -3,7 +3,7 @@ use std::path::Path;
 
 use facet_value::{VArray, Value, value};
 
-use crate::config::{ResolvedDrive, ResolvedMount};
+use crate::config::{BtrfsFs, ResolvedDrive, ResolvedFs, ResolvedMount, SimpleFs, ZfsFs};
 use crate::error::RumError;
 use crate::iso9660::{self, IsoFile};
 
@@ -14,6 +14,7 @@ pub fn seed_hash(
     packages: &[String],
     mounts: &[ResolvedMount],
     drives: &[ResolvedDrive],
+    fs: &[ResolvedFs],
 ) -> String {
     let mut hasher = DefaultHasher::new();
     hostname.hash(&mut hasher);
@@ -28,6 +29,9 @@ pub fn seed_hash(
         d.name.hash(&mut hasher);
         d.size.hash(&mut hasher);
     }
+    for f in fs {
+        f.hash(&mut hasher);
+    }
     format!("{:016x}", hasher.finish())
 }
 
@@ -38,6 +42,7 @@ pub async fn generate_seed_iso(
     provision_script: &str,
     packages: &[String],
     mounts: &[ResolvedMount],
+    fs: &[ResolvedFs],
 ) -> Result<(), RumError> {
     if let Some(parent) = seed_path.parent() {
         tokio::fs::create_dir_all(parent)
@@ -49,7 +54,7 @@ pub async fn generate_seed_iso(
     }
 
     let meta_data = format!("instance-id: {hostname}\nlocal-hostname: {hostname}\n");
-    let user_data = build_user_data(provision_script, packages, mounts);
+    let user_data = build_user_data(provision_script, packages, mounts, fs);
     // Network config v2 for cloud-init NoCloud datasource.
     // Note: no outer "network:" wrapper — the file IS the network config directly.
     let network_config =
@@ -94,6 +99,7 @@ fn build_user_data(
     provision_script: &str,
     packages: &[String],
     mounts: &[ResolvedMount],
+    fs: &[ResolvedFs],
 ) -> String {
     let user = value!({
         "name": "rum",
@@ -110,6 +116,15 @@ fn build_user_data(
 
     let mut write_files = VArray::new();
     write_files.push(autologin_file);
+
+    if !fs.is_empty() {
+        let drive_script = build_drive_script(fs);
+        write_files.push(value!({
+            "path": "/var/lib/cloud/scripts/rum-drives.sh",
+            "permissions": "0755",
+            "content": (drive_script.as_str()),
+        }));
+    }
 
     if !provision_script.is_empty() {
         write_files.push(value!({
@@ -136,6 +151,14 @@ fn build_user_data(
             Value::from("-p"),
             Value::from(m.target.as_str()),
         ])));
+    }
+
+    // Drive formatting/mounting runs before the provision script
+    if !fs.is_empty() {
+        runcmd.push(value!([
+            "/bin/sh",
+            "/var/lib/cloud/scripts/rum-drives.sh"
+        ]));
     }
 
     if !provision_script.is_empty() {
@@ -187,26 +210,185 @@ fn build_user_data(
     format!("#cloud-config\n{yaml}")
 }
 
+fn build_drive_script(fs: &[ResolvedFs]) -> String {
+    use std::collections::BTreeSet;
+    use std::fmt::Write;
+
+    let mut script = String::from(
+        "#!/usr/bin/env sh\nset -eu\n\n\
+         . /etc/os-release\n\
+         install_pkg() {\n\
+         \x20 case \"$ID\" in\n\
+         \x20   ubuntu|debian) DEBIAN_FRONTEND=noninteractive apt-get install -y \"$@\" ;;\n\
+         \x20   arch)          pacman -S --noconfirm \"$@\" ;;\n\
+         \x20   fedora)        dnf install -y \"$@\" ;;\n\
+         \x20   alpine)        apk add \"$@\" ;;\n\
+         \x20   *) echo \"rum: unsupported OS '$ID' for package install\" >&2; exit 1 ;;\n\
+         \x20 esac\n\
+         }\n\n",
+    );
+
+    // Collect needed filesystem types for tool checks
+    let mut need_simple: BTreeSet<&str> = BTreeSet::new();
+    let mut need_zfs = false;
+    let mut need_btrfs = false;
+
+    for entry in fs {
+        match entry {
+            ResolvedFs::Simple(s) => {
+                need_simple.insert(&s.filesystem);
+            }
+            ResolvedFs::Zfs(_) => need_zfs = true,
+            ResolvedFs::Btrfs(_) => need_btrfs = true,
+        }
+    }
+
+    // Emit tool checks
+    for fs_type in &need_simple {
+        match *fs_type {
+            "ext4" | "ext3" | "ext2" => {
+                writeln!(
+                    script,
+                    "command -v mkfs.{fs_type} >/dev/null 2>&1 || install_pkg e2fsprogs"
+                )
+                .unwrap();
+            }
+            "xfs" => script.push_str("command -v mkfs.xfs >/dev/null 2>&1 || install_pkg xfsprogs\n"),
+            "ntfs" => script.push_str("command -v mkfs.ntfs >/dev/null 2>&1 || install_pkg ntfs-3g\n"),
+            "vfat" => script.push_str("command -v mkfs.vfat >/dev/null 2>&1 || install_pkg dosfstools\n"),
+            _ => {
+                writeln!(
+                    script,
+                    "command -v mkfs.{fs_type} >/dev/null 2>&1 || echo \"rum: mkfs.{fs_type} not found\" >&2"
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    if need_btrfs {
+        script.push_str("command -v mkfs.btrfs >/dev/null 2>&1 || install_pkg btrfs-progs\n");
+    }
+
+    if need_zfs {
+        script.push_str(
+            "command -v zpool >/dev/null 2>&1 || {\n\
+             \x20 case \"$ID\" in\n\
+             \x20   ubuntu|debian) install_pkg zfsutils-linux ;;\n\
+             \x20   arch)          install_pkg zfs-utils ;;\n\
+             \x20   fedora)        install_pkg zfs ;;\n\
+             \x20   alpine)        install_pkg zfs ;;\n\
+             \x20 esac\n\
+             \x20 modprobe zfs\n\
+             }\n",
+        );
+    }
+
+    script.push('\n');
+
+    // Per-filesystem setup blocks
+    fn emit_simple(script: &mut String, s: &SimpleFs) {
+        use std::fmt::Write;
+        writeln!(
+            script,
+            "if ! blkid -o value -s TYPE {} >/dev/null 2>&1; then",
+            s.dev
+        )
+        .unwrap();
+        writeln!(script, "  mkfs.{} {}", s.filesystem, s.dev).unwrap();
+        script.push_str("fi\n");
+        writeln!(script, "mkdir -p {}", s.target).unwrap();
+        writeln!(
+            script,
+            "grep -q '{}' /etc/fstab || echo '{} {} {} defaults,nofail 0 2' >> /etc/fstab",
+            s.dev, s.dev, s.target, s.filesystem
+        )
+        .unwrap();
+        script.push_str("mount -a\n\n");
+    }
+
+    fn emit_zfs(script: &mut String, z: &ZfsFs) {
+        use std::fmt::Write;
+        writeln!(
+            script,
+            "if ! zpool list {} >/dev/null 2>&1; then",
+            z.pool
+        )
+        .unwrap();
+        let mode_arg = if z.mode.is_empty() {
+            String::new()
+        } else {
+            format!("{} ", z.mode)
+        };
+        writeln!(
+            script,
+            "  zpool create -o ashift=12 -O mountpoint={} {} {}{}",
+            z.target,
+            z.pool,
+            mode_arg,
+            z.devs.join(" ")
+        )
+        .unwrap();
+        script.push_str("fi\n\n");
+    }
+
+    fn emit_btrfs(script: &mut String, b: &BtrfsFs) {
+        use std::fmt::Write;
+        let first_dev = &b.devs[0];
+        writeln!(
+            script,
+            "if ! blkid -o value -s TYPE {} >/dev/null 2>&1; then",
+            first_dev
+        )
+        .unwrap();
+        let mode_arg = if b.mode == "single" {
+            String::new()
+        } else {
+            format!("-d {} ", b.mode)
+        };
+        writeln!(script, "  mkfs.btrfs {}{}", mode_arg, b.devs.join(" ")).unwrap();
+        script.push_str("fi\n");
+        writeln!(script, "mkdir -p {}", b.target).unwrap();
+        writeln!(
+            script,
+            "grep -q '{}' /etc/fstab || echo '{} {} btrfs defaults,nofail 0 0' >> /etc/fstab",
+            first_dev, first_dev, b.target
+        )
+        .unwrap();
+        script.push_str("mount -a\n\n");
+    }
+
+    for entry in fs {
+        match entry {
+            ResolvedFs::Simple(s) => emit_simple(&mut script, s),
+            ResolvedFs::Zfs(z) => emit_zfs(&mut script, z),
+            ResolvedFs::Btrfs(b) => emit_btrfs(&mut script, b),
+        }
+    }
+
+    script
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn user_data_is_valid_cloud_config() {
-        let ud = build_user_data("", &[], &[]);
+        let ud = build_user_data("", &[], &[], &[]);
         assert!(ud.starts_with("#cloud-config\n"));
     }
 
     #[test]
     fn user_data_contains_user() {
-        let ud = build_user_data("", &[], &[]);
+        let ud = build_user_data("", &[], &[], &[]);
         assert!(ud.contains("name: rum"));
         assert!(ud.contains("lock_passwd: false"));
     }
 
     #[test]
     fn user_data_contains_packages() {
-        let ud = build_user_data("", &["curl".into(), "git".into()], &[]);
+        let ud = build_user_data("", &["curl".into(), "git".into()], &[], &[]);
         assert!(ud.contains("packages:"));
         assert!(ud.contains("curl"));
         assert!(ud.contains("git"));
@@ -214,7 +396,7 @@ mod tests {
 
     #[test]
     fn user_data_yaml_special_chars_in_packages() {
-        let ud = build_user_data("", &["foo: bar".into()], &[]);
+        let ud = build_user_data("", &["foo: bar".into()], &[], &[]);
         // YAML serializer should quote or escape the colon
         assert!(
             ud.contains("foo: bar") || ud.contains("'foo: bar'") || ud.contains("\"foo: bar\"")
@@ -223,7 +405,7 @@ mod tests {
 
     #[test]
     fn user_data_autologin_dropin() {
-        let ud = build_user_data("", &[], &[]);
+        let ud = build_user_data("", &[], &[], &[]);
         assert!(ud.contains("autologin.conf"));
         assert!(ud.contains("--autologin rum"));
         assert!(ud.contains("--keep-baud 115200,38400,9600"));
@@ -231,7 +413,7 @@ mod tests {
 
     #[test]
     fn user_data_runcmd_restarts_getty() {
-        let ud = build_user_data("", &[], &[]);
+        let ud = build_user_data("", &[], &[], &[]);
         assert!(ud.contains("runcmd:"));
         assert!(ud.contains("daemon-reload"));
         assert!(ud.contains("serial-getty@ttyS0.service"));
@@ -239,7 +421,7 @@ mod tests {
 
     #[test]
     fn user_data_provision_script() {
-        let ud = build_user_data("echo hello\necho world", &[], &[]);
+        let ud = build_user_data("echo hello\necho world", &[], &[], &[]);
         assert!(ud.contains("rum-provision.sh"));
         assert!(ud.contains("echo hello"));
         assert!(ud.contains("echo world"));
@@ -248,7 +430,7 @@ mod tests {
 
     #[test]
     fn user_data_runcmd_includes_provision_script() {
-        let ud = build_user_data("echo hello", &[], &[]);
+        let ud = build_user_data("echo hello", &[], &[], &[]);
         assert!(ud.contains("rum-provision.sh"));
     }
 
@@ -260,7 +442,7 @@ mod tests {
             readonly: false,
             tag: "mnt_project".into(),
         }];
-        let ud = build_user_data("", &[], &mounts);
+        let ud = build_user_data("", &[], &mounts, &[]);
         assert!(ud.contains("mounts:"));
         assert!(ud.contains("mnt_project"));
         assert!(ud.contains("/mnt/project"));
@@ -268,5 +450,83 @@ mod tests {
         assert!(ud.contains("nofail"));
         // Should also have mkdir in runcmd
         assert!(ud.contains("mkdir"));
+    }
+
+    #[test]
+    fn drive_script_ext4() {
+        let fs = vec![ResolvedFs::Simple(SimpleFs {
+            filesystem: "ext4".into(),
+            dev: "/dev/vdb".into(),
+            target: "/mnt/data".into(),
+        })];
+        let script = build_drive_script(&fs);
+        assert!(script.starts_with("#!/usr/bin/env sh"));
+        assert!(script.contains("install_pkg"));
+        assert!(script.contains("e2fsprogs"));
+        assert!(script.contains("mkfs.ext4 /dev/vdb"));
+        assert!(script.contains("mkdir -p /mnt/data"));
+        assert!(script.contains("/dev/vdb /mnt/data ext4 defaults,nofail"));
+        assert!(script.contains("blkid")); // idempotency guard
+    }
+
+    #[test]
+    fn drive_script_zfs_mirror() {
+        let fs = vec![ResolvedFs::Zfs(ZfsFs {
+            pool: "logspool".into(),
+            devs: vec!["/dev/vdc".into(), "/dev/vdd".into()],
+            target: "/mnt/logs".into(),
+            mode: "mirror".into(),
+        })];
+        let script = build_drive_script(&fs);
+        assert!(script.contains("zfsutils-linux")); // ubuntu/debian package
+        assert!(script.contains("modprobe zfs"));
+        assert!(script.contains("zpool list logspool")); // idempotency guard
+        assert!(script.contains("zpool create"));
+        assert!(script.contains("mountpoint=/mnt/logs"));
+        assert!(script.contains("mirror /dev/vdc /dev/vdd"));
+    }
+
+    #[test]
+    fn drive_script_btrfs_raid1() {
+        let fs = vec![ResolvedFs::Btrfs(BtrfsFs {
+            devs: vec!["/dev/vde".into(), "/dev/vdf".into()],
+            target: "/mnt/fast".into(),
+            mode: "raid1".into(),
+        })];
+        let script = build_drive_script(&fs);
+        assert!(script.contains("btrfs-progs"));
+        assert!(script.contains("mkfs.btrfs -d raid1 /dev/vde /dev/vdf"));
+        assert!(script.contains("mkdir -p /mnt/fast"));
+        assert!(script.contains("/dev/vde /mnt/fast btrfs defaults,nofail"));
+        assert!(script.contains("blkid")); // idempotency guard
+    }
+
+    #[test]
+    fn user_data_with_fs_includes_drive_script() {
+        let fs = vec![ResolvedFs::Simple(SimpleFs {
+            filesystem: "ext4".into(),
+            dev: "/dev/vdb".into(),
+            target: "/mnt/data".into(),
+        })];
+        let ud = build_user_data("", &[], &[], &fs);
+        assert!(ud.contains("rum-drives.sh"));
+        assert!(ud.contains("/bin/sh"));
+        assert!(ud.contains("mkfs.ext4"));
+    }
+
+    #[test]
+    fn user_data_drive_script_before_provision() {
+        let fs = vec![ResolvedFs::Simple(SimpleFs {
+            filesystem: "ext4".into(),
+            dev: "/dev/vdb".into(),
+            target: "/mnt/data".into(),
+        })];
+        let ud = build_user_data("echo hello", &[], &[], &fs);
+        let drives_pos = ud.find("rum-drives.sh").unwrap();
+        let provision_pos = ud.find("rum-provision.sh").unwrap();
+        assert!(
+            drives_pos < provision_pos,
+            "drive script should run before provision script"
+        );
     }
 }
