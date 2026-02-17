@@ -59,4 +59,14 @@ pub enum RumError {
 
     #[error("{command} is not yet implemented")]
     NotImplemented { command: String },
+
+    #[error("init cancelled by user")]
+    InitCancelled,
+
+    #[error("failed to write config: {path}")]
+    ConfigWrite {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
 }

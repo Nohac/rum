@@ -43,4 +43,11 @@ pub enum Command {
         /// Output directory
         dir: PathBuf,
     },
+
+    /// Initialize a new rum.toml in the current directory
+    Init {
+        /// Skip all prompts and use sensible defaults
+        #[arg(long)]
+        defaults: bool,
+    },
 }

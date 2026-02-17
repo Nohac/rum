@@ -18,10 +18,16 @@ async fn main() -> miette::Result<()> {
 
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
+    // Handle init before loading config — it creates the config
+    if let Command::Init { defaults } = cli.command {
+        return rum::init::run(defaults).map_err(Into::into);
+    }
+
     let sys_config = config::load_config(&cli.config)?;
     let backend = backend::create_backend();
 
     match cli.command {
+        Command::Init { .. } => unreachable!(),
         Command::Up { reset } => backend.up(&sys_config, reset).await?,
         Command::Down => backend.down(&sys_config).await?,
         Command::Destroy { purge } => backend.destroy(&sys_config, purge).await?,

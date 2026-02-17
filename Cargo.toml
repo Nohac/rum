@@ -20,6 +20,7 @@ futures-util = "0.3"
 facet-value = "0.43"
 facet-yaml = "0.43"
 facet-xml = "0.43"
+inquire = "0.7"
 
 [dev-dependencies]
 assert_cmd = "2"

@@ -276,3 +276,46 @@ memory_mb = 512
         .success()
         .stdout(predicate::str::contains("'dev'"));
 }
+
+#[test]
+fn init_defaults_creates_config() {
+    let dir = tempfile::tempdir().unwrap();
+
+    rum()
+        .arg("init")
+        .arg("--defaults")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created rum.toml"));
+
+    let content = std::fs::read_to_string(dir.path().join("rum.toml")).unwrap();
+    assert!(content.contains("[image]"));
+    assert!(content.contains("[resources]"));
+    assert!(content.contains("cpus = 2"));
+    assert!(content.contains("memory_mb = 2048"));
+    assert!(content.contains("cloud-images.ubuntu.com"));
+}
+
+#[test]
+fn init_defaults_refuses_overwrite() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("rum.toml"), "existing").unwrap();
+
+    rum()
+        .arg("init")
+        .arg("--defaults")
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
+fn init_help_shows_defaults_flag() {
+    rum()
+        .args(["init", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--defaults"));
+}
