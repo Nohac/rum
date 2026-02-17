@@ -48,8 +48,7 @@ pub struct FsEntryConfig {
     pub drives: Vec<String>,
     #[facet(default)]
     pub target: String,
-    #[facet(default)]
-    pub mode: String,
+    pub mode: Option<String>,
     #[facet(default)]
     pub pool: String,
 }
@@ -66,14 +65,14 @@ pub struct ZfsFs {
     pub pool: String,
     pub devs: Vec<String>,
     pub target: String,
-    pub mode: String,
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Hash)]
 pub struct BtrfsFs {
     pub devs: Vec<String>,
     pub target: String,
-    pub mode: String,
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Hash)]
@@ -350,15 +349,10 @@ impl SystemConfig {
                             .iter()
                             .map(|name| format!("/dev/{}", drive_map[name.as_str()]))
                             .collect();
-                        let mode = if entry.mode.is_empty() {
-                            "single".into()
-                        } else {
-                            entry.mode.clone()
-                        };
                         resolved.push(ResolvedFs::Btrfs(BtrfsFs {
                             devs,
                             target: entry.target.clone(),
-                            mode,
+                            mode: entry.mode.clone(),
                         }));
                     }
                     _ => {
@@ -514,7 +508,7 @@ fn validate_config(config: &Config) -> Result<(), RumError> {
                             message: format!("{label}: '{fs_type}' uses 'drive', not 'drives'"),
                         });
                     }
-                    if !entry.mode.is_empty() {
+                    if entry.mode.is_some() {
                         return Err(RumError::Validation {
                             message: format!("{label}: 'mode' is only valid for zfs/btrfs"),
                         });
@@ -872,7 +866,7 @@ pool = "logspool"
         let config: Config = facet_toml::from_str(toml).unwrap();
         validate_config(&config).unwrap();
         assert_eq!(config.fs["zfs"][0].drives, vec!["logs1", "logs2"]);
-        assert_eq!(config.fs["zfs"][0].mode, "mirror");
+        assert_eq!(config.fs["zfs"][0].mode.as_deref(), Some("mirror"));
         assert_eq!(config.fs["zfs"][0].pool, "logspool");
     }
 
@@ -996,7 +990,7 @@ pool = "logspool"
             vec![FsEntryConfig {
                 drives: vec!["logs1".into(), "logs2".into()],
                 target: "/mnt/logs".into(),
-                mode: "mirror".into(),
+                mode: Some("mirror".into()),
                 ..Default::default()
             }],
         );
@@ -1007,7 +1001,7 @@ pool = "logspool"
             ResolvedFs::Zfs(z) => {
                 assert_eq!(z.pool, "logs1"); // defaults to first drive name
                 assert_eq!(z.devs.len(), 2);
-                assert_eq!(z.mode, "mirror");
+                assert_eq!(z.mode.as_deref(), Some("mirror"));
                 assert_eq!(z.target, "/mnt/logs");
             }
             _ => panic!("expected Zfs"),

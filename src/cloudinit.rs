@@ -366,10 +366,9 @@ fn build_drive_script(fs: &[ResolvedFs]) -> String {
             z.pool
         )
         .unwrap();
-        let mode_arg = if z.mode.is_empty() {
-            String::new()
-        } else {
-            format!("{} ", z.mode)
+        let mode_arg = match z.mode.as_deref() {
+            Some(m) => format!("{m} "),
+            None => String::new(),
         };
         writeln!(
             script,
@@ -392,10 +391,9 @@ fn build_drive_script(fs: &[ResolvedFs]) -> String {
             first_dev
         )
         .unwrap();
-        let mode_arg = if b.mode == "single" {
-            String::new()
-        } else {
-            format!("-d {} ", b.mode)
+        let mode_arg = match b.mode.as_deref() {
+            Some(m) => format!("-d {m} "),
+            None => String::new(),
         };
         writeln!(script, "  mkfs.btrfs {}{}", mode_arg, b.devs.join(" ")).unwrap();
         script.push_str("fi\n");
@@ -569,7 +567,7 @@ mod tests {
             pool: "logspool".into(),
             devs: vec!["/dev/vdc".into(), "/dev/vdd".into()],
             target: "/mnt/logs".into(),
-            mode: "mirror".into(),
+            mode: Some("mirror".into()),
         })];
         let script = build_drive_script(&fs);
         assert!(script.contains("zfsutils-linux")); // ubuntu/debian package
@@ -585,7 +583,7 @@ mod tests {
         let fs = vec![ResolvedFs::Btrfs(BtrfsFs {
             devs: vec!["/dev/vde".into(), "/dev/vdf".into()],
             target: "/mnt/fast".into(),
-            mode: "raid1".into(),
+            mode: Some("raid1".into()),
         })];
         let script = build_drive_script(&fs);
         assert!(script.contains("btrfs-progs"));

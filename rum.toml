@@ -16,9 +16,20 @@ ip = "192.168.50.10"       # optional: DHCP reservation via stable MAC
 [[network.interfaces]]
 network = "dev-net"         # no ip = plain DHCP
 
-[provision]
-script = "echo 'Hello from rum!'"
-packages = ["curl", "inotify-tools"]
+[provision.system]
+script = """
+echo ===============================
+echo initial system setup
+echo ===============================
+"""
+
+[provision.boot]
+script = """
+echo ===============================
+echo run on each boot
+echo ===============================
+echo "did-run-on-boot" > /did-run.log
+"""
 
 [[mounts]]
 source = "."              # "." = rum.toml dir, "git" = repo root, or absolute path
@@ -42,5 +53,4 @@ target = "/mnt/data"
 [[fs.zfs]]
 drives = ["logs1", "logs2"]
 target = "/mnt/logs"
-mode = "mirror"                # optional: mirror, raidz, raidz2, stripe (default)
 pool = "logspool"              # optional: defaults to first drive name
