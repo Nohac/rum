@@ -1,6 +1,6 @@
 # Disable autologin by default
 
-**ID:** d20630f3 | **Status:** Open | **Created:** 2026-02-16T23:32:25+01:00
+**ID:** d20630f3 | **Status:** Done | **Created:** 2026-02-16T23:32:25+01:00
 
 Currently the autologin dropin is always written, causing the `rum` user to be logged in automatically on the serial console. This should be opt-in rather than the default.
 

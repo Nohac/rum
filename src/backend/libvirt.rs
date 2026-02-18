@@ -71,6 +71,7 @@ impl super::Backend for LibvirtBackend {
             &mounts,
             &drives,
             &resolved_fs,
+            config.advanced.autologin,
         );
         let seed_path = paths::seed_path(id, name_opt, &seed_hash);
         let xml_path = paths::domain_xml_path(id, name_opt);
@@ -128,6 +129,7 @@ impl super::Backend for LibvirtBackend {
                 config.provision.boot.as_ref().map(|s| s.script.as_str()),
                 &mounts,
                 &resolved_fs,
+                config.advanced.autologin,
             )
             .await?;
         }

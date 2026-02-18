@@ -598,6 +598,9 @@ fn generate_toml(config: &WizardConfig) -> String {
     out.push_str("#\n");
     out.push_str("# [provision.boot]\n");
     out.push_str("# script = \"echo booted\"\n");
+    out.push_str("#\n");
+    out.push_str("# [advanced]\n");
+    out.push_str("# autologin = false\n");
 
     out
 }

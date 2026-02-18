@@ -45,6 +45,7 @@ async fn main() -> miette::Result<()> {
                 sys_config.config.provision.boot.as_ref().map(|s| s.script.as_str()),
                 &mounts,
                 &resolved_fs,
+                sys_config.config.advanced.autologin,
             )
             .await?;
             println!("Wrote seed ISO to {}", seed_path.display());

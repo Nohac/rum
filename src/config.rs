@@ -172,6 +172,8 @@ pub struct AdvancedConfig {
     pub domain_type: String,
     #[facet(default = "q35")]
     pub machine: String,
+    #[facet(default)]
+    pub autologin: bool,
 }
 
 impl Default for AdvancedConfig {
@@ -180,6 +182,7 @@ impl Default for AdvancedConfig {
             libvirt_uri: "qemu:///system".into(),
             domain_type: "kvm".into(),
             machine: "q35".into(),
+            autologin: false,
         }
     }
 }
