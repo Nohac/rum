@@ -539,6 +539,57 @@ fn validate_config(config: &Config) -> Result<(), RumError> {
         }
     }
 
+    // Validate mount target overlap between [[mounts]] and [[fs.*]] entries
+    {
+        // Collect all (target, source_label) pairs
+        let mut targets: Vec<(&str, String)> = Vec::new();
+        for m in &config.mounts {
+            targets.push((&m.target, "[[mounts]]".into()));
+        }
+        for (fs_type, entries) in &config.fs {
+            for entry in entries {
+                targets.push((&entry.target, format!("[[fs.{fs_type}]]")));
+            }
+        }
+
+        // Check for exact duplicates
+        for i in 0..targets.len() {
+            for j in (i + 1)..targets.len() {
+                if targets[i].0 == targets[j].0 {
+                    return Err(RumError::Validation {
+                        message: format!(
+                            "mount target '{}' is used by both {} and {}",
+                            targets[i].0, targets[i].1, targets[j].1
+                        ),
+                    });
+                }
+            }
+        }
+
+        // Check for prefix overlap (parent/child mount points)
+        for i in 0..targets.len() {
+            for j in 0..targets.len() {
+                if i == j {
+                    continue;
+                }
+                let parent = targets[i].0;
+                let child = targets[j].0;
+                // Check if parent is a prefix of child with a '/' boundary
+                if child.len() > parent.len()
+                    && child.starts_with(parent)
+                    && child.as_bytes()[parent.len()] == b'/'
+                {
+                    return Err(RumError::Validation {
+                        message: format!(
+                            "mount target '{}' overlaps with '{}' (from {})",
+                            child, parent, targets[i].1
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
     // Validate network interfaces
     for iface in &config.network.interfaces {
         if iface.network.is_empty() {
@@ -1044,5 +1095,94 @@ memory_mb = 512
         let config: Config = facet_toml::from_str(toml).unwrap();
         assert!(config.provision.system.is_none());
         assert!(config.provision.boot.is_none());
+    }
+
+    #[test]
+    fn mount_target_exact_overlap_rejected() {
+        let mut config = valid_config();
+        config.mounts = vec![MountConfig {
+            source: "/tmp".into(),
+            target: "/mnt/data".into(),
+            ..Default::default()
+        }];
+        config.drives.insert("d".into(), DriveConfig { size: "10G".into() });
+        config.fs.insert(
+            "ext4".into(),
+            vec![FsEntryConfig {
+                drive: "d".into(),
+                target: "/mnt/data".into(),
+                ..Default::default()
+            }],
+        );
+        let err = validate_config(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("/mnt/data"), "error should mention the target path: {msg}");
+        assert!(msg.contains("[[mounts]]"), "error should mention [[mounts]]: {msg}");
+        assert!(msg.contains("[[fs.ext4]]"), "error should mention [[fs.ext4]]: {msg}");
+    }
+
+    #[test]
+    fn mount_target_prefix_overlap_rejected() {
+        let mut config = valid_config();
+        config.mounts = vec![MountConfig {
+            source: "/tmp".into(),
+            target: "/mnt/data".into(),
+            ..Default::default()
+        }];
+        config.drives.insert("d".into(), DriveConfig { size: "10G".into() });
+        config.fs.insert(
+            "ext4".into(),
+            vec![FsEntryConfig {
+                drive: "d".into(),
+                target: "/mnt/data/sub".into(),
+                ..Default::default()
+            }],
+        );
+        let err = validate_config(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("overlaps"), "error should mention overlap: {msg}");
+        assert!(msg.contains("/mnt/data/sub"), "error should mention the child path: {msg}");
+        assert!(msg.contains("/mnt/data"), "error should mention the parent path: {msg}");
+    }
+
+    #[test]
+    fn mount_target_no_false_prefix_overlap() {
+        // /mnt/data and /mnt/database should NOT be flagged as overlapping
+        let mut config = valid_config();
+        config.mounts = vec![MountConfig {
+            source: "/tmp".into(),
+            target: "/mnt/data".into(),
+            ..Default::default()
+        }];
+        config.drives.insert("d".into(), DriveConfig { size: "10G".into() });
+        config.fs.insert(
+            "ext4".into(),
+            vec![FsEntryConfig {
+                drive: "d".into(),
+                target: "/mnt/database".into(),
+                ..Default::default()
+            }],
+        );
+        validate_config(&config).unwrap();
+    }
+
+    #[test]
+    fn mount_target_non_overlapping_passes() {
+        let mut config = valid_config();
+        config.mounts = vec![MountConfig {
+            source: "/tmp".into(),
+            target: "/mnt/shared".into(),
+            ..Default::default()
+        }];
+        config.drives.insert("d".into(), DriveConfig { size: "10G".into() });
+        config.fs.insert(
+            "ext4".into(),
+            vec![FsEntryConfig {
+                drive: "d".into(),
+                target: "/mnt/data".into(),
+                ..Default::default()
+            }],
+        );
+        validate_config(&config).unwrap();
     }
 }

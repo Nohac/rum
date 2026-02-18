@@ -1,6 +1,6 @@
 # Validate mount target overlap between mounts and fs entries
 
-**ID:** bcf5f93a | **Status:** Open | **Created:** 2026-02-16T21:12:48+01:00
+**ID:** bcf5f93a | **Status:** Done | **Created:** 2026-02-16T21:12:48+01:00
 
 Currently nothing prevents a virtiofs mount (`[[mounts]]`) and a filesystem entry (`[[fs.*]]`) from targeting the same mount point, or one being a subdirectory of the other. This would cause confusing runtime failures inside the VM.
 
