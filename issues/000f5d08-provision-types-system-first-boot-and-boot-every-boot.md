@@ -1,6 +1,6 @@
 # Provision types: system (first boot) and boot (every boot)
 
-**ID:** 000f5d08 | **Status:** Open | **Created:** 2026-02-16T21:19:42+01:00
+**ID:** 000f5d08 | **Status:** Done | **Created:** 2026-02-16T21:19:42+01:00
 
 Inspired by Lima's provision types. Currently `[provision]` has a single `script` field that runs via cloud-init `runcmd` (first boot only). Split into two types:
 

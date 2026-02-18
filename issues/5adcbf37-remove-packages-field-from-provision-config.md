@@ -1,6 +1,6 @@
 # Remove packages field from provision config
 
-**ID:** 5adcbf37 | **Status:** Open | **Created:** 2026-02-14T16:05:47+01:00
+**ID:** 5adcbf37 | **Status:** Done | **Created:** 2026-02-14T16:05:47+01:00
 
 The `packages` field in `[provision]` is unreliable — it assumes a specific package manager and breaks when the user switches distros (e.g. apt vs dnf vs pacman). Users should install packages via the provision script instead, which gives them full control.
 

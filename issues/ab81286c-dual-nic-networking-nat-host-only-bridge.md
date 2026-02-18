@@ -1,6 +1,6 @@
 # Flexible multi-NIC networking
 
-**ID:** ab81286c | **Status:** Open | **Created:** 2026-02-15T22:24:58+01:00
+**ID:** ab81286c | **Status:** Done | **Created:** 2026-02-15T22:24:58+01:00
 
 Make network configuration flexible: support multiple NICs, bridge mode with custom IPs, and the ability to disable NAT.
 

@@ -1,6 +1,6 @@
 # replace cloud-init string concatenation with facet-value structured YAML
 
-**ID:** 22a8d7fa | **Status:** Open | **Created:** 2026-02-14T13:43:26+01:00
+**ID:** 22a8d7fa | **Status:** Done | **Created:** 2026-02-14T13:43:26+01:00
 
 ## Summary
 

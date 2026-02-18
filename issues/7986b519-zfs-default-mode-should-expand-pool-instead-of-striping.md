@@ -1,6 +1,6 @@
 # ZFS default mode should expand pool instead of striping
 
-**ID:** 7986b519 | **Status:** Open | **Created:** 2026-02-16T21:12:44+01:00
+**ID:** 7986b519 | **Status:** Done | **Created:** 2026-02-16T21:12:44+01:00
 
 When no `mode` is specified for a `[[fs.zfs]]` entry, the default should create an expanding pool — each drive is added as a separate top-level vdev so the pool's usable capacity is the sum of all drives. Currently the default omits the vdev keyword which results in a stripe (same effect, but the intent should be explicit).
 

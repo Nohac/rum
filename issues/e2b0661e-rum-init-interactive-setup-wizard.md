@@ -1,6 +1,6 @@
 # rum init interactive setup wizard
 
-**ID:** e2b0661e | **Status:** Open | **Created:** 2026-02-15T14:29:22+01:00
+**ID:** e2b0661e | **Status:** Done | **Created:** 2026-02-15T14:29:22+01:00
 
 `rum init` — an interactive setup wizard that generates a `rum.toml` in the current directory, getting users up and running quickly.
 
