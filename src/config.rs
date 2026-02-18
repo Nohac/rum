@@ -93,6 +93,8 @@ pub struct Config {
     #[facet(default)]
     pub advanced: AdvancedConfig,
     #[facet(default)]
+    pub ssh: SshConfig,
+    #[facet(default)]
     pub mounts: Vec<MountConfig>,
     #[facet(default)]
     pub drives: BTreeMap<String, DriveConfig>,
@@ -183,6 +185,30 @@ impl Default for AdvancedConfig {
             domain_type: "kvm".into(),
             machine: "q35".into(),
             autologin: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Facet)]
+#[facet(default)]
+pub struct SshConfig {
+    #[facet(default = "rum")]
+    pub user: String,
+    #[facet(default = "ssh")]
+    pub command: String,
+    #[facet(default)]
+    pub interface: String,
+    #[facet(default)]
+    pub authorized_keys: Vec<String>,
+}
+
+impl Default for SshConfig {
+    fn default() -> Self {
+        Self {
+            user: "rum".into(),
+            command: "ssh".into(),
+            interface: String::new(),
+            authorized_keys: Vec::new(),
         }
     }
 }
@@ -763,6 +789,7 @@ pub mod tests {
             network: NetworkConfig::default(),
             provision: ProvisionConfig::default(),
             advanced: AdvancedConfig::default(),
+            ssh: SshConfig::default(),
             mounts: vec![],
             drives: BTreeMap::new(),
             fs: BTreeMap::new(),

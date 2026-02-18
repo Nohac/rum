@@ -10,6 +10,9 @@ use crate::config::SystemConfig;
 use crate::error::RumError;
 use crate::{cloudinit, domain_xml, image, network_xml, overlay, paths, qcow2};
 
+use ssh_key::private::Ed25519Keypair;
+use ssh_key::PrivateKey;
+
 struct ConnGuard(Connect);
 
 impl std::ops::Deref for ConnGuard {
@@ -64,6 +67,11 @@ impl super::Backend for LibvirtBackend {
 
         let resolved_fs = sys_config.resolve_fs(&drives)?;
 
+        // Generate SSH keypair in work dir if absent, collect all authorized keys
+        let ssh_key_path = paths::ssh_key_path(id, name_opt);
+        ensure_ssh_keypair(&ssh_key_path).await?;
+        let ssh_keys = collect_ssh_keys(&ssh_key_path, &config.ssh.authorized_keys).await?;
+
         let seed_hash = cloudinit::seed_hash(
             sys_config.hostname(),
             config.provision.system.as_ref().map(|s| s.script.as_str()),
@@ -72,6 +80,7 @@ impl super::Backend for LibvirtBackend {
             &drives,
             &resolved_fs,
             config.advanced.autologin,
+            &ssh_keys,
         );
         let seed_path = paths::seed_path(id, name_opt, &seed_hash);
         let xml_path = paths::domain_xml_path(id, name_opt);
@@ -130,6 +139,7 @@ impl super::Backend for LibvirtBackend {
                 &mounts,
                 &resolved_fs,
                 config.advanced.autologin,
+                &ssh_keys,
             )
             .await?;
         }
@@ -400,6 +410,247 @@ impl super::Backend for LibvirtBackend {
 
         Ok(())
     }
+
+    async fn ssh(&self, sys_config: &SystemConfig, args: &[String]) -> Result<(), RumError> {
+        let vm_name = sys_config.display_name();
+        let id = &sys_config.id;
+        let name_opt = sys_config.name.as_deref();
+        let conn = connect(sys_config)?;
+
+        let dom = Domain::lookup_by_name(&conn, vm_name).map_err(|_| RumError::SshNotReady {
+            name: vm_name.to_string(),
+            reason: "VM is not defined".into(),
+        })?;
+
+        if !is_running(&dom) {
+            return Err(RumError::SshNotReady {
+                name: vm_name.to_string(),
+                reason: "VM is not running".into(),
+            });
+        }
+
+        let ip = get_vm_ip(&dom, sys_config)?;
+        let ssh_key_path = paths::ssh_key_path(id, name_opt);
+
+        if !ssh_key_path.exists() {
+            return Err(RumError::SshNotReady {
+                name: vm_name.to_string(),
+                reason: "SSH key not found (run `rum up` first)".into(),
+            });
+        }
+
+        drop(conn);
+
+        let ssh_config = &sys_config.config.ssh;
+        let cmd_parts: Vec<&str> = ssh_config.command.split_whitespace().collect();
+        let program = cmd_parts[0];
+        let cmd_args = &cmd_parts[1..];
+
+        let key_str = ssh_key_path.to_string_lossy();
+        let user_host = format!("{}@{}", ssh_config.user, ip);
+
+        // Use exec() to replace the rum process with the ssh command, giving
+        // it full terminal control.
+        use std::os::unix::process::CommandExt;
+        let mut command = std::process::Command::new(program);
+        command.args(cmd_args);
+        command.args(["-i", &key_str]);
+        // Only inject host-key options for plain `ssh`. Custom commands like
+        // `kitty +kitten ssh` manage host verification themselves and these
+        // options can interfere with their terminal protocol.
+        if program == "ssh" {
+            command.args([
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+            ]);
+        }
+        command.arg(&user_host);
+        command.args(args);
+
+        // exec() replaces this process — only returns on error
+        let err = command.exec();
+        Err(RumError::Io {
+            context: format!("exec {}", ssh_config.command),
+            source: err,
+        })
+    }
+
+    async fn ssh_config(&self, sys_config: &SystemConfig) -> Result<(), RumError> {
+        let vm_name = sys_config.display_name();
+        let id = &sys_config.id;
+        let name_opt = sys_config.name.as_deref();
+        let conn = connect(sys_config)?;
+
+        let dom = Domain::lookup_by_name(&conn, vm_name).map_err(|_| RumError::SshNotReady {
+            name: vm_name.to_string(),
+            reason: "VM is not defined".into(),
+        })?;
+
+        if !is_running(&dom) {
+            return Err(RumError::SshNotReady {
+                name: vm_name.to_string(),
+                reason: "VM is not running".into(),
+            });
+        }
+
+        let ip = get_vm_ip(&dom, sys_config)?;
+        let ssh_key_path = paths::ssh_key_path(id, name_opt);
+
+        println!(
+            "Host {vm_name}\n  \
+             HostName {ip}\n  \
+             User {user}\n  \
+             IdentityFile {key}\n  \
+             StrictHostKeyChecking no\n  \
+             UserKnownHostsFile /dev/null\n  \
+             LogLevel ERROR",
+            user = sys_config.config.ssh.user,
+            key = ssh_key_path.display(),
+        );
+
+        Ok(())
+    }
+}
+
+fn get_vm_ip(dom: &Domain, sys_config: &SystemConfig) -> Result<String, RumError> {
+    let vm_name = sys_config.display_name();
+    let ifaces = dom
+        .interface_addresses(virt::sys::VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE, 0)
+        .map_err(|_| RumError::SshNotReady {
+            name: vm_name.to_string(),
+            reason: "could not query network interfaces".into(),
+        })?;
+
+    let ssh_interface = &sys_config.config.ssh.interface;
+
+    if ssh_interface.is_empty() {
+        // NAT mode: return first IPv4 address that doesn't belong to an extra interface
+        let extra_macs: Vec<String> = sys_config
+            .config
+            .network
+            .interfaces
+            .iter()
+            .enumerate()
+            .map(|(i, _)| domain_xml::generate_mac(vm_name, i))
+            .collect();
+
+        for iface in &ifaces {
+            let iface_mac = iface.hwaddr.to_lowercase();
+            if extra_macs.iter().any(|m| m.to_lowercase() == iface_mac) {
+                continue;
+            }
+            for addr in &iface.addrs {
+                // IPv4 only (type 0 in libvirt)
+                if addr.typed == 0 {
+                    return Ok(addr.addr.clone());
+                }
+            }
+        }
+    } else {
+        // Named interface: find matching MAC from config interfaces
+        let iface_idx = sys_config
+            .config
+            .network
+            .interfaces
+            .iter()
+            .position(|i| i.network == *ssh_interface);
+
+        if let Some(idx) = iface_idx {
+            let expected_mac = domain_xml::generate_mac(vm_name, idx).to_lowercase();
+            for iface in &ifaces {
+                if iface.hwaddr.to_lowercase() == expected_mac {
+                    for addr in &iface.addrs {
+                        if addr.typed == 0 {
+                            return Ok(addr.addr.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Err(RumError::SshNotReady {
+        name: vm_name.to_string(),
+        reason: "no IP address found (VM may still be booting)".into(),
+    })
+}
+
+/// Generate an Ed25519 SSH keypair at `key_path` (+ `.pub`) if it doesn't exist.
+/// Sets 0600 permissions on the private key so OpenSSH accepts it.
+async fn ensure_ssh_keypair(key_path: &std::path::Path) -> Result<(), RumError> {
+    if key_path.exists() {
+        return Ok(());
+    }
+
+    if let Some(parent) = key_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| RumError::Io {
+                context: format!("creating directory {}", parent.display()),
+                source: e,
+            })?;
+    }
+
+    let keypair = Ed25519Keypair::random(&mut rand_core::OsRng);
+    let private = PrivateKey::from(keypair);
+
+    let openssh_private = private
+        .to_openssh(ssh_key::LineEnding::LF)
+        .map_err(|e| RumError::Io {
+            context: format!("encoding SSH private key: {e}"),
+            source: std::io::Error::other(e.to_string()),
+        })?;
+    tokio::fs::write(key_path, openssh_private.as_bytes())
+        .await
+        .map_err(|e| RumError::Io {
+            context: format!("writing SSH key to {}", key_path.display()),
+            source: e,
+        })?;
+
+    // OpenSSH refuses keys with open permissions — must be 0600
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))
+            .await
+            .map_err(|e| RumError::Io {
+                context: format!("setting permissions on {}", key_path.display()),
+                source: e,
+            })?;
+    }
+
+    let pub_key = private.public_key().to_openssh().map_err(|e| RumError::Io {
+        context: format!("encoding SSH public key: {e}"),
+        source: std::io::Error::other(e.to_string()),
+    })?;
+    let pub_path = key_path.with_extension("pub");
+    tokio::fs::write(&pub_path, pub_key.as_bytes())
+        .await
+        .map_err(|e| RumError::Io {
+            context: format!("writing SSH public key to {}", pub_path.display()),
+            source: e,
+        })?;
+
+    tracing::info!(path = %key_path.display(), "generated SSH keypair");
+    Ok(())
+}
+
+/// Read the auto-generated public key and combine with any config-specified keys.
+async fn collect_ssh_keys(
+    key_path: &std::path::Path,
+    extra_keys: &[String],
+) -> Result<Vec<String>, RumError> {
+    let pub_path = key_path.with_extension("pub");
+    let auto_pub = tokio::fs::read_to_string(&pub_path)
+        .await
+        .map_err(|e| RumError::Io {
+            context: format!("reading SSH public key from {}", pub_path.display()),
+            source: e,
+        })?;
+    let mut keys = vec![auto_pub.trim().to_string()];
+    keys.extend(extra_keys.iter().cloned());
+    Ok(keys)
 }
 
 fn connect(sys_config: &SystemConfig) -> Result<ConnGuard, RumError> {

@@ -44,3 +44,8 @@ pub fn drive_path(id: &str, name: Option<&str>, drive_name: &str) -> PathBuf {
 pub fn config_path_file(id: &str, name: Option<&str>) -> PathBuf {
     work_dir(id, name).join("config_path")
 }
+
+/// Path to the auto-generated SSH private key for a VM.
+pub fn ssh_key_path(id: &str, name: Option<&str>) -> PathBuf {
+    work_dir(id, name).join("ssh_ed25519")
+}

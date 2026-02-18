@@ -32,6 +32,8 @@ async fn main() -> miette::Result<()> {
         Command::Down => backend.down(&sys_config).await?,
         Command::Destroy { purge } => backend.destroy(&sys_config, purge).await?,
         Command::Status => backend.status(&sys_config).await?,
+        Command::Ssh { args } => backend.ssh(&sys_config, &args).await?,
+        Command::SshConfig => backend.ssh_config(&sys_config).await?,
         Command::DumpIso { dir } => {
             use rum::cloudinit;
             let mounts = sys_config.resolve_mounts()?;
@@ -46,6 +48,7 @@ async fn main() -> miette::Result<()> {
                 &mounts,
                 &resolved_fs,
                 sys_config.config.advanced.autologin,
+                &[],
             )
             .await?;
             println!("Wrote seed ISO to {}", seed_path.display());

@@ -44,6 +44,16 @@ pub enum Command {
         dir: PathBuf,
     },
 
+    /// Connect to the VM via SSH
+    Ssh {
+        /// Extra arguments passed to ssh
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Print OpenSSH config for the VM
+    SshConfig,
+
     /// Initialize a new rum.toml in the current directory
     Init {
         /// Skip all prompts and use sensible defaults

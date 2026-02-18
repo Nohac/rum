@@ -60,6 +60,10 @@ pub enum RumError {
     #[error("{command} is not yet implemented")]
     NotImplemented { command: String },
 
+    #[error("SSH not ready for '{name}': {reason}")]
+    #[diagnostic(help("ensure the VM is running with `rum status`"))]
+    SshNotReady { name: String, reason: String },
+
     #[error("init cancelled by user")]
     InitCancelled,
 

@@ -319,3 +319,51 @@ fn init_help_shows_defaults_flag() {
         .success()
         .stdout(predicate::str::contains("--defaults"));
 }
+
+#[test]
+fn ssh_help_works() {
+    rum()
+        .args(["ssh", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Connect to the VM via SSH"));
+}
+
+#[test]
+fn ssh_config_help_works() {
+    rum()
+        .args(["ssh-config", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Print OpenSSH config"));
+}
+
+#[test]
+fn config_with_ssh_section() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("rum.toml");
+    let mut f = std::fs::File::create(&config_path).unwrap();
+    write!(
+        f,
+        r#"
+[image]
+base = "ubuntu-24.04"
+
+[resources]
+cpus = 2
+memory_mb = 2048
+
+[ssh]
+user = "admin"
+command = "kitten ssh"
+authorized_keys = ["ssh-ed25519 AAAA... user@host"]
+"#
+    )
+    .unwrap();
+
+    rum()
+        .args(["--config", config_path.to_str().unwrap(), "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not defined"));
+}
