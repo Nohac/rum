@@ -1,6 +1,6 @@
 # Unquoted paths in generated drive shell scripts
 
-**ID:** 60d3524a | **Status:** Open | **Created:** 2026-02-18T18:44:34+01:00
+**ID:** 60d3524a | **Status:** Done | **Created:** 2026-02-18T18:44:34+01:00
 
 `build_drive_script()` in `src/cloudinit.rs` interpolates mount targets, pool names, and device paths directly into shell commands without quoting. This breaks for paths containing spaces (e.g. `/mnt/my data`).
 

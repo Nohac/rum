@@ -342,16 +342,16 @@ fn build_drive_script(fs: &[ResolvedFs]) -> String {
         use std::fmt::Write;
         writeln!(
             script,
-            "if ! blkid -o value -s TYPE {} >/dev/null 2>&1; then",
+            "if ! blkid -o value -s TYPE \"{}\" >/dev/null 2>&1; then",
             s.dev
         )
         .unwrap();
-        writeln!(script, "  mkfs.{} {}", s.filesystem, s.dev).unwrap();
+        writeln!(script, "  mkfs.{} \"{}\"", s.filesystem, s.dev).unwrap();
         script.push_str("fi\n");
-        writeln!(script, "mkdir -p {}", s.target).unwrap();
+        writeln!(script, "mkdir -p \"{}\"", s.target).unwrap();
         writeln!(
             script,
-            "grep -q '{}' /etc/fstab || echo '{} {} {} defaults,nofail 0 2' >> /etc/fstab",
+            "grep -q \"{}\" /etc/fstab || echo \"{} {} {} defaults,nofail 0 2\" >> /etc/fstab",
             s.dev, s.dev, s.target, s.filesystem
         )
         .unwrap();
@@ -362,7 +362,7 @@ fn build_drive_script(fs: &[ResolvedFs]) -> String {
         use std::fmt::Write;
         writeln!(
             script,
-            "if ! zpool list {} >/dev/null 2>&1; then",
+            "if ! zpool list \"{}\" >/dev/null 2>&1; then",
             z.pool
         )
         .unwrap();
@@ -370,13 +370,14 @@ fn build_drive_script(fs: &[ResolvedFs]) -> String {
             Some(m) => format!("{m} "),
             None => String::new(),
         };
+        let quoted_devs: Vec<String> = z.devs.iter().map(|d| format!("\"{d}\"")).collect();
         writeln!(
             script,
-            "  zpool create -o ashift=12 -O mountpoint={} {} {}{}",
+            "  zpool create -o ashift=12 -O mountpoint=\"{}\" \"{}\" {}{}",
             z.target,
             z.pool,
             mode_arg,
-            z.devs.join(" ")
+            quoted_devs.join(" ")
         )
         .unwrap();
         script.push_str("fi\n\n");
@@ -387,7 +388,7 @@ fn build_drive_script(fs: &[ResolvedFs]) -> String {
         let first_dev = &b.devs[0];
         writeln!(
             script,
-            "if ! blkid -o value -s TYPE {} >/dev/null 2>&1; then",
+            "if ! blkid -o value -s TYPE \"{}\" >/dev/null 2>&1; then",
             first_dev
         )
         .unwrap();
@@ -395,12 +396,13 @@ fn build_drive_script(fs: &[ResolvedFs]) -> String {
             Some(m) => format!("-d {m} "),
             None => String::new(),
         };
-        writeln!(script, "  mkfs.btrfs {}{}", mode_arg, b.devs.join(" ")).unwrap();
+        let quoted_devs: Vec<String> = b.devs.iter().map(|d| format!("\"{d}\"")).collect();
+        writeln!(script, "  mkfs.btrfs {}{}", mode_arg, quoted_devs.join(" ")).unwrap();
         script.push_str("fi\n");
-        writeln!(script, "mkdir -p {}", b.target).unwrap();
+        writeln!(script, "mkdir -p \"{}\"", b.target).unwrap();
         writeln!(
             script,
-            "grep -q '{}' /etc/fstab || echo '{} {} btrfs defaults,nofail 0 0' >> /etc/fstab",
+            "grep -q \"{}\" /etc/fstab || echo \"{} {} btrfs defaults,nofail 0 0\" >> /etc/fstab",
             first_dev, first_dev, b.target
         )
         .unwrap();
@@ -555,8 +557,8 @@ mod tests {
         assert!(script.starts_with("#!/usr/bin/env sh"));
         assert!(script.contains("install_pkg"));
         assert!(script.contains("e2fsprogs"));
-        assert!(script.contains("mkfs.ext4 /dev/vdb"));
-        assert!(script.contains("mkdir -p /mnt/data"));
+        assert!(script.contains("mkfs.ext4 \"/dev/vdb\""));
+        assert!(script.contains("mkdir -p \"/mnt/data\""));
         assert!(script.contains("/dev/vdb /mnt/data ext4 defaults,nofail"));
         assert!(script.contains("blkid")); // idempotency guard
     }
@@ -572,10 +574,10 @@ mod tests {
         let script = build_drive_script(&fs);
         assert!(script.contains("zfsutils-linux")); // ubuntu/debian package
         assert!(script.contains("modprobe zfs"));
-        assert!(script.contains("zpool list logspool")); // idempotency guard
+        assert!(script.contains("zpool list \"logspool\"")); // idempotency guard
         assert!(script.contains("zpool create"));
-        assert!(script.contains("mountpoint=/mnt/logs"));
-        assert!(script.contains("mirror /dev/vdc /dev/vdd"));
+        assert!(script.contains("mountpoint=\"/mnt/logs\""));
+        assert!(script.contains("mirror \"/dev/vdc\" \"/dev/vdd\""));
     }
 
     #[test]
@@ -587,8 +589,8 @@ mod tests {
         })];
         let script = build_drive_script(&fs);
         assert!(script.contains("btrfs-progs"));
-        assert!(script.contains("mkfs.btrfs -d raid1 /dev/vde /dev/vdf"));
-        assert!(script.contains("mkdir -p /mnt/fast"));
+        assert!(script.contains("mkfs.btrfs -d raid1 \"/dev/vde\" \"/dev/vdf\""));
+        assert!(script.contains("mkdir -p \"/mnt/fast\""));
         assert!(script.contains("/dev/vde /mnt/fast btrfs defaults,nofail"));
         assert!(script.contains("blkid")); // idempotency guard
     }
@@ -627,6 +629,46 @@ mod tests {
     fn user_data_autologin_waits_for_provisioning_services() {
         let ud = build_user_data(None, None, &[], &[]);
         assert!(ud.contains("After=rum-system.service rum-boot.service"));
+    }
+
+    #[test]
+    fn drive_script_quotes_paths_with_spaces() {
+        let fs = vec![
+            ResolvedFs::Simple(SimpleFs {
+                filesystem: "ext4".into(),
+                dev: "/dev/vdb".into(),
+                target: "/mnt/my data".into(),
+            }),
+            ResolvedFs::Zfs(ZfsFs {
+                pool: "my pool".into(),
+                devs: vec!["/dev/vdc".into()],
+                target: "/mnt/zfs store".into(),
+                mode: None,
+            }),
+            ResolvedFs::Btrfs(BtrfsFs {
+                devs: vec!["/dev/vde".into(), "/dev/vdf".into()],
+                target: "/mnt/bt data".into(),
+                mode: None,
+            }),
+        ];
+        let script = build_drive_script(&fs);
+
+        // ext4: all paths must be double-quoted
+        assert!(script.contains("mkdir -p \"/mnt/my data\""));
+        assert!(script.contains("mkfs.ext4 \"/dev/vdb\""));
+        assert!(script.contains("grep -q \"/dev/vdb\" /etc/fstab"));
+        assert!(script.contains("/dev/vdb /mnt/my data ext4 defaults,nofail"));
+
+        // zfs: pool name, mountpoint, and devices must be quoted
+        assert!(script.contains("zpool list \"my pool\""));
+        assert!(script.contains("mountpoint=\"/mnt/zfs store\""));
+        assert!(script.contains("\"my pool\""));
+        assert!(script.contains("\"/dev/vdc\""));
+
+        // btrfs: target and devices must be quoted
+        assert!(script.contains("mkdir -p \"/mnt/bt data\""));
+        assert!(script.contains("\"/dev/vde\" \"/dev/vdf\""));
+        assert!(script.contains("/dev/vde /mnt/bt data btrfs defaults,nofail"));
     }
 
     #[test]
