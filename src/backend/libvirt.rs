@@ -62,7 +62,7 @@ impl super::Backend for LibvirtBackend {
             }
         }
 
-        let resolved_fs = sys_config.resolve_fs(&drives);
+        let resolved_fs = sys_config.resolve_fs(&drives)?;
 
         let seed_hash = cloudinit::seed_hash(
             sys_config.hostname(),

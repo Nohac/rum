@@ -315,7 +315,7 @@ impl SystemConfig {
     ///
     /// Must be called after `resolve_drives()` — uses the resolved drives
     /// to look up device names (vdb, vdc, ...).
-    pub fn resolve_fs(&self, drives: &[ResolvedDrive]) -> Vec<ResolvedFs> {
+    pub fn resolve_fs(&self, drives: &[ResolvedDrive]) -> Result<Vec<ResolvedFs>, RumError> {
         let drive_map: std::collections::HashMap<&str, &str> = drives
             .iter()
             .map(|d| (d.name.as_str(), d.dev.as_str()))
@@ -326,11 +326,17 @@ impl SystemConfig {
             for entry in entries {
                 match fs_type.as_str() {
                     "zfs" => {
-                        let devs = entry
-                            .drives
-                            .iter()
-                            .map(|name| format!("/dev/{}", drive_map[name.as_str()]))
-                            .collect();
+                        let mut devs = Vec::new();
+                        for name in &entry.drives {
+                            let dev = drive_map.get(name.as_str()).ok_or_else(|| {
+                                RumError::Validation {
+                                    message: format!(
+                                        "fs entry references unknown drive '{name}'"
+                                    ),
+                                }
+                            })?;
+                            devs.push(format!("/dev/{dev}"));
+                        }
                         let pool = if entry.pool.is_empty() {
                             entry.drives[0].clone()
                         } else {
@@ -344,11 +350,17 @@ impl SystemConfig {
                         }));
                     }
                     "btrfs" => {
-                        let devs = entry
-                            .drives
-                            .iter()
-                            .map(|name| format!("/dev/{}", drive_map[name.as_str()]))
-                            .collect();
+                        let mut devs = Vec::new();
+                        for name in &entry.drives {
+                            let dev = drive_map.get(name.as_str()).ok_or_else(|| {
+                                RumError::Validation {
+                                    message: format!(
+                                        "fs entry references unknown drive '{name}'"
+                                    ),
+                                }
+                            })?;
+                            devs.push(format!("/dev/{dev}"));
+                        }
                         resolved.push(ResolvedFs::Btrfs(BtrfsFs {
                             devs,
                             target: entry.target.clone(),
@@ -356,8 +368,16 @@ impl SystemConfig {
                         }));
                     }
                     _ => {
-                        let dev =
-                            format!("/dev/{}", drive_map[entry.drive.as_str()]);
+                        let dev_name =
+                            drive_map.get(entry.drive.as_str()).ok_or_else(|| {
+                                RumError::Validation {
+                                    message: format!(
+                                        "fs entry references unknown drive '{}'",
+                                        entry.drive
+                                    ),
+                                }
+                            })?;
+                        let dev = format!("/dev/{dev_name}");
                         resolved.push(ResolvedFs::Simple(SimpleFs {
                             filesystem: fs_type.clone(),
                             dev,
@@ -367,7 +387,7 @@ impl SystemConfig {
                 }
             }
         }
-        resolved
+        Ok(resolved)
     }
 }
 
@@ -410,12 +430,18 @@ fn validate_config(config: &Config) -> Result<(), RumError> {
     }
 
     // Validate drives
+    if config.drives.len() > 24 {
+        return Err(RumError::Validation {
+            message: format!("too many drives (max 24, got {})", config.drives.len()),
+        });
+    }
     for (name, drive) in &config.drives {
         if drive.size.is_empty() {
             return Err(RumError::Validation {
                 message: format!("drive '{name}' must have a size"),
             });
         }
+        crate::util::parse_size(&drive.size)?;
     }
 
     // Validate filesystem entries
@@ -587,6 +613,34 @@ fn validate_config(config: &Config) -> Result<(), RumError> {
                     });
                 }
             }
+        }
+    }
+
+    // Validate hostname
+    if !config.network.hostname.is_empty() {
+        let h = &config.network.hostname;
+        if h.len() > 253 {
+            return Err(RumError::Validation {
+                message: format!(
+                    "invalid hostname '{}': must contain only alphanumerics, hyphens, and dots",
+                    h
+                ),
+            });
+        }
+        let valid = h
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+            && !h.starts_with('-')
+            && !h.starts_with('.')
+            && !h.ends_with('-')
+            && !h.ends_with('.');
+        if !valid {
+            return Err(RumError::Validation {
+                message: format!(
+                    "invalid hostname '{}': must contain only alphanumerics, hyphens, and dots",
+                    h
+                ),
+            });
         }
     }
 
@@ -1015,7 +1069,7 @@ pool = "logspool"
             }],
         );
         let drives = sc.resolve_drives().unwrap();
-        let fs = sc.resolve_fs(&drives);
+        let fs = sc.resolve_fs(&drives).unwrap();
         assert_eq!(fs.len(), 1);
         match &fs[0] {
             ResolvedFs::Simple(s) => {
@@ -1046,7 +1100,7 @@ pool = "logspool"
             }],
         );
         let drives = sc.resolve_drives().unwrap();
-        let fs = sc.resolve_fs(&drives);
+        let fs = sc.resolve_fs(&drives).unwrap();
         assert_eq!(fs.len(), 1);
         match &fs[0] {
             ResolvedFs::Zfs(z) => {
@@ -1184,5 +1238,50 @@ memory_mb = 512
             }],
         );
         validate_config(&config).unwrap();
+    }
+
+    #[test]
+    fn drive_count_exceeding_24_rejected() {
+        let mut config = valid_config();
+        for i in 0..25 {
+            config
+                .drives
+                .insert(format!("d{i}"), DriveConfig { size: "1G".into() });
+        }
+        let err = validate_config(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("too many drives"), "expected drive count error: {msg}");
+        assert!(msg.contains("25"), "error should mention count: {msg}");
+    }
+
+    #[test]
+    fn invalid_drive_size_format_rejected() {
+        let mut config = valid_config();
+        config
+            .drives
+            .insert("bad".into(), DriveConfig { size: "20X".into() });
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn invalid_hostname_rejected() {
+        for hostname in ["-bad", "bad-", ".bad", "bad.", "hello world", "a@b", "a/b"] {
+            let mut config = valid_config();
+            config.network.hostname = hostname.into();
+            assert!(
+                validate_config(&config).is_err(),
+                "expected hostname '{}' to be rejected",
+                hostname
+            );
+        }
+    }
+
+    #[test]
+    fn valid_hostname_passes() {
+        for hostname in ["myvm", "my-vm", "vm.example.com", "a", "VM-01"] {
+            let mut config = valid_config();
+            config.network.hostname = hostname.into();
+            validate_config(&config).unwrap();
+        }
     }
 }

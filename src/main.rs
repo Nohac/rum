@@ -36,7 +36,7 @@ async fn main() -> miette::Result<()> {
             use rum::cloudinit;
             let mounts = sys_config.resolve_mounts()?;
             let drives = sys_config.resolve_drives()?;
-            let resolved_fs = sys_config.resolve_fs(&drives);
+            let resolved_fs = sys_config.resolve_fs(&drives)?;
             let seed_path = dir.join("seed.iso");
             cloudinit::generate_seed_iso(
                 &seed_path,

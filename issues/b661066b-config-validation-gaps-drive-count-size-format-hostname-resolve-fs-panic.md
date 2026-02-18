@@ -1,6 +1,6 @@
 # Config validation gaps: drive count, size format, hostname, resolve_fs panic
 
-**ID:** b661066b | **Status:** Open | **Created:** 2026-02-18T18:44:35+01:00
+**ID:** b661066b | **Status:** Done | **Created:** 2026-02-18T18:44:35+01:00
 
 Several missing validations in `src/config.rs` that cause confusing runtime failures instead of clear config errors.
 
