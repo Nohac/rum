@@ -1,4 +1,3 @@
-use std::process::Stdio;
 
 use indicatif::ProgressBar;
 use virt::connect::Connect;
@@ -226,37 +225,30 @@ impl super::Backend for LibvirtBackend {
             tracing::info!(vm_name, "VM already running");
         }
 
+        // 8. Start inotify bridge in the background (non-blocking)
+        // The bridge task waits for the VM IP internally via virsh subprocess,
+        // so we don't hold any libvirt handles and can drop conn immediately.
+        let watch_handle = if mounts.iter().any(|m| m.inotify && !m.readonly) {
+            Some(crate::watch::start_inotify_bridge(
+                &mounts,
+                sys_config.libvirt_uri().to_string(),
+                vm_name.to_string(),
+                config.ssh.user.clone(),
+                ssh_key_path.clone(),
+            ))
+        } else {
+            None
+        };
+
         drop(conn);
 
-        // 7. Attach serial console via virsh
-        println!("Attaching console (press Ctrl+C or Ctrl+] to detach)...");
-        let mut child = tokio::process::Command::new("virsh")
-            .args(["-c", sys_config.libvirt_uri(), "console", vm_name])
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|e| RumError::Io {
-                context: "running virsh console".into(),
-                source: e,
-            })?;
+        // 9. Wait for Ctrl+C (no console attach — keeps log output clean)
+        println!("VM is running. Press Ctrl+C to stop...");
+        tokio::signal::ctrl_c().await.ok();
 
-        tokio::select! {
-            status = child.wait() => {
-                match status {
-                    Ok(s) if !s.success() => {
-                        tracing::warn!("virsh console exited with {s}");
-                    }
-                    Err(e) => {
-                        tracing::warn!("virsh console wait failed: {e}");
-                    }
-                    _ => {}
-                }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                let _ = child.kill().await;
-                println!("\nDetached from console. VM is still running.");
-            }
+        // Stop inotify bridge on console detach
+        if let Some(handle) = watch_handle {
+            handle.abort();
         }
 
         Ok(())

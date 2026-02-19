@@ -566,6 +566,7 @@ mod tests {
             target: "/mnt/project".into(),
             readonly: false,
             tag: "mnt_project".into(),
+            inotify: false,
         }];
         let ud = build_user_data(None, None, &mounts, &[], false, &[]);
         assert!(ud.contains("mounts:"));
