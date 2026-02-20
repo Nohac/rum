@@ -8,9 +8,11 @@ name = "rum_agent"
 path = "src/lib.rs"
 
 [dependencies]
-tokio = { version = "1", features = ["rt", "net", "io-util", "macros", "signal"] }
+tokio = { version = "1", features = ["rt", "net", "io-util", "macros", "signal", "sync", "process"] }
 tokio-vsock = "0.7"
 roam = "0.6"
 roam-stream = "0.6"
 facet = "0.43"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 libc = "0.2"

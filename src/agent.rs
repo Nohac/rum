@@ -1,7 +1,5 @@
-use std::sync::LazyLock;
-
-use roam_stream::{Connector, HandshakeConfig, NoDispatcher, connect};
-use rum_agent::RumAgentClient;
+use roam_stream::{Client, Connector, HandshakeConfig, NoDispatcher, connect};
+use rum_agent::{LogEvent, LogLevel, LogStream, RumAgentClient};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -10,25 +8,9 @@ use tokio_vsock::{VsockAddr, VsockStream};
 use crate::config::PortForward;
 use crate::error::RumError;
 
-/// Raw rum-agent binary, embedded at compile time via artifact dependency.
-const AGENT_BINARY_RAW: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_RUM_AGENT"));
-
-/// Patched rum-agent binary with standard Linux interpreter/rpath.
-/// NixOS builds have `/nix/store/...` paths that don't exist on Ubuntu etc.
-/// arwen rewrites these to standard paths; no-op if already standard.
-pub static AGENT_BINARY: LazyLock<Vec<u8>> = LazyLock::new(|| {
-    let mut writer = arwen::elf::Writer::read(AGENT_BINARY_RAW)
-        .expect("rum-agent should be a valid ELF binary");
-    writer
-        .elf_set_interpreter(b"/lib64/ld-linux-x86-64.so.2".to_vec())
-        .expect("failed to set interpreter");
-    writer
-        .elf_set_runpath(b"/lib/x86_64-linux-gnu:/lib64:/usr/lib".to_vec())
-        .expect("failed to set rpath");
-    let mut out = Vec::new();
-    writer.write(&mut out).expect("failed to write patched ELF");
-    out
-});
+/// Static musl rum-agent binary, embedded at compile time via artifact dependency.
+/// No glibc dependency — runs on any Linux guest.
+pub const AGENT_BINARY: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_RUM_AGENT"));
 
 pub const AGENT_SERVICE: &str = "\
 [Unit]
@@ -50,7 +32,7 @@ const FORWARD_PORT: u32 = 2223;
 const AGENT_TIMEOUT_SECS: u64 = 120;
 const AGENT_RETRY_INTERVAL_MS: u64 = 500;
 
-struct VsockConnector {
+pub(crate) struct VsockConnector {
     cid: u32,
 }
 
@@ -62,9 +44,13 @@ impl Connector for VsockConnector {
     }
 }
 
+/// Type alias for the agent RPC client over vsock.
+pub(crate) type AgentClient = RumAgentClient<Client<VsockConnector, NoDispatcher>>;
+
 /// Wait for the rum-agent in the guest to respond to a ping over vsock.
 /// Retries until the agent is ready or the timeout expires.
-pub async fn wait_for_agent(cid: u32) -> Result<(), RumError> {
+/// Returns the connected client for further RPC calls.
+pub(crate) async fn wait_for_agent(cid: u32) -> Result<AgentClient, RumError> {
     let connector = VsockConnector { cid };
     let client = connect(connector, HandshakeConfig::default(), NoDispatcher);
     let service = RumAgentClient::new(client);
@@ -80,7 +66,7 @@ pub async fn wait_for_agent(cid: u32) -> Result<(), RumError> {
                     hostname = %resp.hostname,
                     "agent ready"
                 );
-                return Ok(());
+                return Ok(service);
             }
             Err(_) if tokio::time::Instant::now() < deadline => {
                 tokio::time::sleep(std::time::Duration::from_millis(AGENT_RETRY_INTERVAL_MS)).await;
@@ -92,6 +78,37 @@ pub async fn wait_for_agent(cid: u32) -> Result<(), RumError> {
             }
         }
     }
+}
+
+/// Start a background task that subscribes to the agent's log stream
+/// and prints events to the host console.
+pub(crate) fn start_log_subscription(agent: &AgentClient) -> JoinHandle<()> {
+    let (tx, mut rx) = roam::channel::<LogEvent>();
+    let agent = agent.clone();
+
+    tokio::spawn(async move {
+        // Fire-and-forget: subscribe_logs blocks on the agent side until disconnect
+        let subscribe_fut = agent.subscribe_logs(tx);
+
+        tokio::spawn(async move {
+            let _ = subscribe_fut.await;
+        });
+
+        while let Ok(Some(event)) = rx.recv().await {
+            let stream = match event.stream {
+                LogStream::Log => "log",
+                LogStream::Stdout => "stdout",
+                LogStream::Stderr => "stderr",
+            };
+            match event.level {
+                LogLevel::Trace => tracing::trace!(target: "guest", stream, "{}", event.message),
+                LogLevel::Debug => tracing::debug!(target: "guest", stream, "{}", event.message),
+                LogLevel::Info => tracing::info!(target: "guest", stream, "{}", event.message),
+                LogLevel::Warn => tracing::warn!(target: "guest", stream, "{}", event.message),
+                LogLevel::Error => tracing::error!(target: "guest", stream, "{}", event.message),
+            }
+        }
+    })
 }
 
 /// Start TCP listeners on the host that forward connections to the guest via vsock.

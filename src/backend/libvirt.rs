@@ -71,7 +71,7 @@ impl super::Backend for LibvirtBackend {
         ensure_ssh_keypair(&ssh_key_path).await?;
         let ssh_keys = collect_ssh_keys(&ssh_key_path, &config.ssh.authorized_keys).await?;
 
-        let agent_binary = &*crate::agent::AGENT_BINARY;
+        let agent_binary = crate::agent::AGENT_BINARY;
 
         let seed_hash = cloudinit::seed_hash(
             sys_config.hostname(),
@@ -82,7 +82,7 @@ impl super::Backend for LibvirtBackend {
             &resolved_fs,
             config.advanced.autologin,
             &ssh_keys,
-            Some(agent_binary.as_slice()),
+            Some(agent_binary),
         );
         let seed_path = paths::seed_path(id, name_opt, &seed_hash);
         let xml_path = paths::domain_xml_path(id, name_opt);
@@ -142,7 +142,7 @@ impl super::Backend for LibvirtBackend {
                 &resolved_fs,
                 config.advanced.autologin,
                 &ssh_keys,
-                Some(agent_binary.as_slice()),
+                Some(agent_binary),
             )
             .await?;
         }
@@ -231,12 +231,18 @@ impl super::Backend for LibvirtBackend {
 
         // 7b. Wait for agent readiness over vsock
         let vsock_cid = parse_vsock_cid(&dom);
-        if let Some(cid) = vsock_cid {
+        let agent_client = if let Some(cid) = vsock_cid {
             println!("Waiting for agent...");
-            crate::agent::wait_for_agent(cid).await?;
+            Some(crate::agent::wait_for_agent(cid).await?)
         } else {
             tracing::warn!("could not determine vsock CID from live XML");
-        }
+            None
+        };
+
+        // 7b2. Start log subscription
+        let log_handle = agent_client
+            .as_ref()
+            .map(crate::agent::start_log_subscription);
 
         // 7c. Start port forwards
         let forward_handles = if let Some(cid) = vsock_cid
@@ -276,7 +282,10 @@ impl super::Backend for LibvirtBackend {
         println!("VM is running. Press Ctrl+C to stop...");
         tokio::signal::ctrl_c().await.ok();
 
-        // Stop port forwards and inotify bridge
+        // Stop log subscription, port forwards and inotify bridge
+        if let Some(handle) = log_handle {
+            handle.abort();
+        }
         for handle in forward_handles {
             handle.abort();
         }
