@@ -49,6 +49,7 @@ async fn main() -> miette::Result<()> {
                 &resolved_fs,
                 sys_config.config.advanced.autologin,
                 &[],
+                None,
             )
             .await?;
             println!("Wrote seed ISO to {}", seed_path.display());

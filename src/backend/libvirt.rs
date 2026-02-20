@@ -71,6 +71,8 @@ impl super::Backend for LibvirtBackend {
         ensure_ssh_keypair(&ssh_key_path).await?;
         let ssh_keys = collect_ssh_keys(&ssh_key_path, &config.ssh.authorized_keys).await?;
 
+        let agent_binary = &*crate::agent::AGENT_BINARY;
+
         let seed_hash = cloudinit::seed_hash(
             sys_config.hostname(),
             config.provision.system.as_ref().map(|s| s.script.as_str()),
@@ -80,6 +82,7 @@ impl super::Backend for LibvirtBackend {
             &resolved_fs,
             config.advanced.autologin,
             &ssh_keys,
+            Some(agent_binary.as_slice()),
         );
         let seed_path = paths::seed_path(id, name_opt, &seed_hash);
         let xml_path = paths::domain_xml_path(id, name_opt);
@@ -139,6 +142,7 @@ impl super::Backend for LibvirtBackend {
                 &resolved_fs,
                 config.advanced.autologin,
                 &ssh_keys,
+                Some(agent_binary.as_slice()),
             )
             .await?;
         }

@@ -115,6 +115,7 @@ struct Devices {
     interface: Vec<Interface>,
     serial: Serial,
     console: Console,
+    vsock: Vsock,
 }
 
 #[derive(Debug, Facet)]
@@ -213,6 +214,21 @@ struct InterfaceSource {
 struct InterfaceModel {
     #[facet(xml::attribute, rename = "type")]
     model_type: String,
+}
+
+// ── vsock ─────────────────────────────────────────────────
+
+#[derive(Debug, Facet)]
+struct Vsock {
+    #[facet(xml::attribute)]
+    model: String,
+    cid: VsockCid,
+}
+
+#[derive(Debug, Facet)]
+struct VsockCid {
+    #[facet(xml::attribute)]
+    auto: String,
 }
 
 // ── serial / console ───────────────────────────────────────
@@ -438,6 +454,12 @@ pub fn generate_domain_xml(
                     port: "0".into(),
                 },
             },
+            vsock: Vsock {
+                model: "virtio".into(),
+                cid: VsockCid {
+                    auto: "yes".into(),
+                },
+            },
         },
     };
 
@@ -506,6 +528,14 @@ memory_mb = 512
         assert!(
             xml.contains(r#"machine="q35""#),
             "machine should default to 'q35', got:\n{xml}"
+        );
+        assert!(
+            xml.contains(r#"<vsock model="virtio">"#),
+            "should have vsock device, got:\n{xml}"
+        );
+        assert!(
+            xml.contains(r#"auto="yes""#),
+            "vsock CID should be auto-assigned, got:\n{xml}"
         );
     }
 

@@ -18,6 +18,7 @@ pub fn seed_hash(
     fs: &[ResolvedFs],
     autologin: bool,
     ssh_keys: &[String],
+    agent_binary: Option<&[u8]>,
 ) -> String {
     let mut hasher = DefaultHasher::new();
     hostname.hash(&mut hasher);
@@ -39,10 +40,16 @@ pub fn seed_hash(
     for k in ssh_keys {
         k.hash(&mut hasher);
     }
+    if let Some(agent) = agent_binary {
+        agent.hash(&mut hasher);
+    }
     format!("{:016x}", hasher.finish())
 }
 
 /// Generate a cloud-init NoCloud seed ISO (ISO 9660 with volume label "CIDATA").
+///
+/// If `agent_binary` is provided, the agent binary and its systemd service are
+/// included in the ISO and installed via cloud-init runcmd on first boot.
 #[allow(clippy::too_many_arguments)]
 pub async fn generate_seed_iso(
     seed_path: &Path,
@@ -53,6 +60,7 @@ pub async fn generate_seed_iso(
     fs: &[ResolvedFs],
     autologin: bool,
     ssh_keys: &[String],
+    agent_binary: Option<&[u8]>,
 ) -> Result<(), RumError> {
     if let Some(parent) = seed_path.parent() {
         tokio::fs::create_dir_all(parent)
@@ -64,29 +72,28 @@ pub async fn generate_seed_iso(
     }
 
     let meta_data = format!("instance-id: {hostname}\nlocal-hostname: {hostname}\n");
-    let user_data = build_user_data(system_script, boot_script, mounts, fs, autologin, ssh_keys);
+    let user_data = build_user_data(system_script, boot_script, mounts, fs, autologin, ssh_keys, agent_binary);
     // Network config v2 for cloud-init NoCloud datasource.
     // Note: no outer "network:" wrapper — the file IS the network config directly.
     let network_config =
         "version: 2\nethernets:\n  id0:\n    match:\n      name: \"en*\"\n    dhcp4: true\n";
 
-    let iso = iso9660::build_iso(
-        "CIDATA",
-        &[
-            IsoFile {
-                name: "meta-data",
-                data: meta_data.as_bytes(),
-            },
-            IsoFile {
-                name: "user-data",
-                data: user_data.as_bytes(),
-            },
-            IsoFile {
-                name: "network-config",
-                data: network_config.as_bytes(),
-            },
-        ],
-    );
+    let iso_files = vec![
+        IsoFile {
+            name: "meta-data",
+            data: meta_data.as_bytes(),
+        },
+        IsoFile {
+            name: "user-data",
+            data: user_data.as_bytes(),
+        },
+        IsoFile {
+            name: "network-config",
+            data: network_config.as_bytes(),
+        },
+    ];
+
+    let iso = iso9660::build_iso("CIDATA", &iso_files);
 
     tokio::fs::write(seed_path, &iso)
         .await
@@ -148,6 +155,7 @@ fn build_user_data(
     fs: &[ResolvedFs],
     autologin: bool,
     ssh_keys: &[String],
+    agent_binary: Option<&[u8]>,
 ) -> String {
     let mut user = value!({
         "name": "rum",
@@ -199,6 +207,21 @@ fn build_user_data(
         }));
     }
 
+    if let Some(agent) = agent_binary {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(agent);
+        write_files.push(value!({
+            "path": "/usr/local/bin/rum-agent",
+            "permissions": "0755",
+            "encoding": "b64",
+            "content": (b64.as_str()),
+        }));
+        write_files.push(value!({
+            "path": "/etc/systemd/system/rum-agent.service",
+            "content": (crate::agent::AGENT_SERVICE),
+        }));
+    }
+
     if autologin {
         write_files.push(value!({
             "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
@@ -228,8 +251,11 @@ fn build_user_data(
     // Reload systemd so it picks up the service unit files from write_files,
     // then enable+start each provisioning service (blocks until complete).
     // No deadlock: these services don't have After=cloud-final.service.
-    if system_script.is_some() || boot_script.is_some() {
+    if system_script.is_some() || boot_script.is_some() || agent_binary.is_some() {
         runcmd.push(value!(["systemctl", "daemon-reload"]));
+    }
+    if agent_binary.is_some() {
+        runcmd.push(value!(["systemctl", "enable", "--now", "rum-agent.service"]));
     }
     if system_script.is_some() {
         runcmd.push(value!(["systemctl", "enable", "--now", "rum-system.service"]));
@@ -449,20 +475,20 @@ mod tests {
 
     #[test]
     fn user_data_is_valid_cloud_config() {
-        let ud = build_user_data(None, None, &[], &[], false, &[]);
+        let ud = build_user_data(None, None, &[], &[], false, &[], None);
         assert!(ud.starts_with("#cloud-config\n"));
     }
 
     #[test]
     fn user_data_contains_user() {
-        let ud = build_user_data(None, None, &[], &[], false, &[]);
+        let ud = build_user_data(None, None, &[], &[], false, &[], None);
         assert!(ud.contains("name: rum"));
         assert!(ud.contains("lock_passwd: false"));
     }
 
     #[test]
     fn user_data_autologin_dropin_in_write_files() {
-        let ud = build_user_data(None, None, &[], &[], true, &[]);
+        let ud = build_user_data(None, None, &[], &[], true, &[], None);
         let write_files = &ud[ud.find("write_files:").unwrap()..ud.find("runcmd:").unwrap()];
         assert!(write_files.contains("autologin.conf"));
         assert!(write_files.contains("--autologin rum"));
@@ -473,7 +499,7 @@ mod tests {
 
     #[test]
     fn user_data_autologin_absent_when_disabled() {
-        let ud = build_user_data(None, None, &[], &[], false, &[]);
+        let ud = build_user_data(None, None, &[], &[], false, &[], None);
         assert!(!ud.contains("autologin.conf"));
         assert!(!ud.contains("--autologin rum"));
         assert!(!ud.contains("serial-getty@ttyS0.service"));
@@ -481,7 +507,7 @@ mod tests {
 
     #[test]
     fn user_data_runcmd_restarts_getty() {
-        let ud = build_user_data(None, None, &[], &[], true, &[]);
+        let ud = build_user_data(None, None, &[], &[], true, &[], None);
         assert!(ud.contains("runcmd:"));
         assert!(ud.contains("daemon-reload"));
         assert!(ud.contains("serial-getty@ttyS0.service"));
@@ -489,7 +515,7 @@ mod tests {
 
     #[test]
     fn user_data_system_script() {
-        let ud = build_user_data(Some("echo hello\necho world"), None, &[], &[], false, &[]);
+        let ud = build_user_data(Some("echo hello\necho world"), None, &[], &[], false, &[], None);
         assert!(ud.contains("rum-system.sh"));
         assert!(ud.contains("echo hello"));
         assert!(ud.contains("echo world"));
@@ -499,7 +525,7 @@ mod tests {
 
     #[test]
     fn user_data_runcmd_enables_system_service() {
-        let ud = build_user_data(Some("echo hello"), None, &[], &[], false, &[]);
+        let ud = build_user_data(Some("echo hello"), None, &[], &[], false, &[], None);
         let runcmd = &ud[ud.find("runcmd:").unwrap()..];
         assert!(runcmd.contains("enable"));
         assert!(runcmd.contains("--now"));
@@ -508,7 +534,7 @@ mod tests {
 
     #[test]
     fn user_data_boot_script() {
-        let ud = build_user_data(None, Some("echo booting"), &[], &[], false, &[]);
+        let ud = build_user_data(None, Some("echo booting"), &[], &[], false, &[], None);
         assert!(ud.contains("rum-boot.sh"));
         assert!(ud.contains("echo booting"));
         assert!(ud.contains("rum-boot.service"));
@@ -518,14 +544,14 @@ mod tests {
 
     #[test]
     fn user_data_boot_script_absent_when_none() {
-        let ud = build_user_data(None, None, &[], &[], false, &[]);
+        let ud = build_user_data(None, None, &[], &[], false, &[], None);
         assert!(!ud.contains("rum-boot.sh"));
         assert!(!ud.contains("/etc/systemd/system/rum-boot.service"));
     }
 
     #[test]
     fn user_data_system_before_boot() {
-        let ud = build_user_data(Some("echo system"), Some("echo boot"), &[], &[], false, &[]);
+        let ud = build_user_data(Some("echo system"), Some("echo boot"), &[], &[], false, &[], None);
         let runcmd = &ud[ud.find("runcmd:").unwrap()..];
         let system_pos = runcmd.find("rum-system.service").unwrap();
         let boot_pos = runcmd.find("rum-boot.service").unwrap();
@@ -537,7 +563,7 @@ mod tests {
 
     #[test]
     fn user_data_boot_service_content() {
-        let ud = build_user_data(None, Some("echo boot"), &[], &[], false, &[]);
+        let ud = build_user_data(None, Some("echo boot"), &[], &[], false, &[], None);
         assert!(ud.contains("Type=oneshot"));
         assert!(ud.contains("RemainAfterExit=yes"));
         assert!(ud.contains("ExecStart=/bin/bash /var/lib/cloud/scripts/rum-boot.sh"));
@@ -546,7 +572,7 @@ mod tests {
 
     #[test]
     fn user_data_system_service_content() {
-        let ud = build_user_data(Some("echo sys"), None, &[], &[], false, &[]);
+        let ud = build_user_data(Some("echo sys"), None, &[], &[], false, &[], None);
         assert!(ud.contains("ConditionPathExists=!/var/lib/rum/.system-provisioned"));
         assert!(ud.contains("ExecStart=/bin/bash /var/lib/cloud/scripts/rum-system.sh"));
         assert!(ud.contains("ExecStartPost=/bin/touch /var/lib/rum/.system-provisioned"));
@@ -554,7 +580,7 @@ mod tests {
 
     #[test]
     fn user_data_system_service_in_write_files() {
-        let ud = build_user_data(Some("echo sys"), None, &[], &[], false, &[]);
+        let ud = build_user_data(Some("echo sys"), None, &[], &[], false, &[], None);
         let write_files = &ud[ud.find("write_files:").unwrap()..ud.find("runcmd:").unwrap()];
         assert!(write_files.contains("rum-system.service"));
     }
@@ -568,7 +594,7 @@ mod tests {
             tag: "mnt_project".into(),
             inotify: false,
         }];
-        let ud = build_user_data(None, None, &mounts, &[], false, &[]);
+        let ud = build_user_data(None, None, &mounts, &[], false, &[], None);
         assert!(ud.contains("mounts:"));
         assert!(ud.contains("mnt_project"));
         assert!(ud.contains("/mnt/project"));
@@ -634,7 +660,7 @@ mod tests {
             dev: "/dev/vdb".into(),
             target: "/mnt/data".into(),
         })];
-        let ud = build_user_data(None, None, &[], &fs, false, &[]);
+        let ud = build_user_data(None, None, &[], &fs, false, &[], None);
         assert!(ud.contains("rum-drives.sh"));
         assert!(ud.contains("/bin/sh"));
         assert!(ud.contains("mkfs.ext4"));
@@ -647,7 +673,7 @@ mod tests {
             dev: "/dev/vdb".into(),
             target: "/mnt/data".into(),
         })];
-        let ud = build_user_data(Some("echo hello"), None, &[], &fs, false, &[]);
+        let ud = build_user_data(Some("echo hello"), None, &[], &fs, false, &[], None);
         let runcmd = &ud[ud.find("runcmd:").unwrap()..];
         let drives_pos = runcmd.find("rum-drives.sh").unwrap();
         let system_pos = runcmd.find("rum-system.service").unwrap();
@@ -659,7 +685,7 @@ mod tests {
 
     #[test]
     fn user_data_autologin_waits_for_provisioning_services() {
-        let ud = build_user_data(None, None, &[], &[], true, &[]);
+        let ud = build_user_data(None, None, &[], &[], true, &[], None);
         assert!(ud.contains("After=rum-system.service rum-boot.service"));
     }
 
@@ -705,7 +731,7 @@ mod tests {
 
     #[test]
     fn user_data_getty_restart_after_provisioning() {
-        let ud = build_user_data(Some("echo sys"), Some("echo boot"), &[], &[], true, &[]);
+        let ud = build_user_data(Some("echo sys"), Some("echo boot"), &[], &[], true, &[], None);
         let runcmd = &ud[ud.find("runcmd:").unwrap()..];
         let system_pos = runcmd.find("rum-system.service").unwrap();
         let boot_pos = runcmd.find("rum-boot.service").unwrap();
@@ -722,7 +748,7 @@ mod tests {
             "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest auto-generated".to_string(),
             "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest extra-key".to_string(),
         ];
-        let ud = build_user_data(None, None, &[], &[], false, &keys);
+        let ud = build_user_data(None, None, &[], &[], false, &keys, None);
         assert!(ud.contains("ssh_authorized_keys:"));
         assert!(ud.contains("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest auto-generated"));
         assert!(ud.contains("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest extra-key"));
@@ -730,7 +756,7 @@ mod tests {
 
     #[test]
     fn user_data_without_ssh_keys_omits_authorized_keys() {
-        let ud = build_user_data(None, None, &[], &[], false, &[]);
+        let ud = build_user_data(None, None, &[], &[], false, &[], None);
         assert!(!ud.contains("ssh_authorized_keys"));
     }
 }
