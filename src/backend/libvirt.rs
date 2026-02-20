@@ -229,6 +229,14 @@ impl super::Backend for LibvirtBackend {
             tracing::info!(vm_name, "VM already running");
         }
 
+        // 7b. Wait for agent readiness over vsock
+        if let Some(cid) = parse_vsock_cid(&dom) {
+            println!("Waiting for agent...");
+            crate::agent::wait_for_agent(cid).await?;
+        } else {
+            tracing::warn!("could not determine vsock CID from live XML");
+        }
+
         // 8. Start inotify bridge in the background (non-blocking)
         // The bridge task waits for the VM IP internally via virsh subprocess,
         // so we don't hold any libvirt handles and can drop conn immediately.
@@ -806,4 +814,29 @@ async fn shutdown_domain(dom: &Domain) -> Result<(), RumError> {
         hint: "check libvirt permissions".into(),
     })?;
     Ok(())
+}
+
+/// Extract the auto-assigned vsock CID from the live domain XML.
+///
+/// After `dom.create()`, libvirt fills in the CID. The live XML contains
+/// something like `<cid auto="yes" address="3"/>` inside `<vsock>`.
+fn parse_vsock_cid(dom: &Domain) -> Option<u32> {
+    let xml = dom.get_xml_desc(0).ok()?;
+
+    // Find the <vsock section, then locate address='N' within it
+    let vsock_start = xml.find("<vsock")?;
+    let vsock_end = xml[vsock_start..].find("</vsock>").map(|i| vsock_start + i)?;
+    let vsock_section = &xml[vsock_start..vsock_end];
+
+    // Look for address="N" or address='N'
+    let addr_prefix = "address=\"";
+    let addr_start = vsock_section.find(addr_prefix).map(|i| i + addr_prefix.len())
+        .or_else(|| {
+            let alt = "address='";
+            vsock_section.find(alt).map(|i| i + alt.len())
+        })?;
+
+    let remaining = &vsock_section[addr_start..];
+    let addr_end = remaining.find(['"', '\''])?;
+    remaining[..addr_end].parse::<u32>().ok()
 }

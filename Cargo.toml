@@ -30,7 +30,9 @@ notify = "8"
 base64 = "0.22"
 arwen = "0.0.5"
 russh = "0.57.0"
-rum-agent = { path = "rum-agent", artifact = "bin" }
+rum-agent = { path = "rum-agent", artifact = "bin", lib = true }
+tokio-vsock = "0.7"
+roam-stream = "0.6"
 
 [dev-dependencies]
 assert_cmd = "2"

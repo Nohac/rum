@@ -67,6 +67,10 @@ pub enum RumError {
     #[error("init cancelled by user")]
     InitCancelled,
 
+    #[error("{message}")]
+    #[diagnostic(help("check that the VM booted and rum-agent started"))]
+    AgentTimeout { message: String },
+
     #[error("failed to write config: {path}")]
     ConfigWrite {
         path: String,
