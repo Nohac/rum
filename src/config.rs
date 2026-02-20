@@ -85,6 +85,25 @@ pub struct SimpleFs {
     pub target: String,
 }
 
+#[derive(Debug, Clone, Default, Facet)]
+#[facet(default)]
+pub struct PortForward {
+    pub host: u16,
+    pub guest: u16,
+    #[facet(default = "127.0.0.1")]
+    pub bind: String,
+}
+
+impl PortForward {
+    pub fn bind_addr(&self) -> &str {
+        if self.bind.is_empty() {
+            "127.0.0.1"
+        } else {
+            &self.bind
+        }
+    }
+}
+
 #[derive(Debug, Clone, Facet)]
 pub struct Config {
     pub image: ImageConfig,
@@ -103,6 +122,8 @@ pub struct Config {
     pub drives: BTreeMap<String, DriveConfig>,
     #[facet(default)]
     pub fs: BTreeMap<String, Vec<FsEntryConfig>>,
+    #[facet(default)]
+    pub ports: Vec<PortForward>,
 }
 
 #[derive(Debug, Clone, Facet)]
@@ -686,6 +707,32 @@ fn validate_config(config: &Config) -> Result<(), RumError> {
         }
     }
 
+    // Validate port forwards
+    for (i, pf) in config.ports.iter().enumerate() {
+        if pf.host == 0 {
+            return Err(RumError::Validation {
+                message: format!("ports[{i}]: host port must be > 0"),
+            });
+        }
+        if pf.guest == 0 {
+            return Err(RumError::Validation {
+                message: format!("ports[{i}]: guest port must be > 0"),
+            });
+        }
+        // Check for duplicate host port + bind combinations
+        for j in (i + 1)..config.ports.len() {
+            if pf.host == config.ports[j].host && pf.bind_addr() == config.ports[j].bind_addr() {
+                return Err(RumError::Validation {
+                    message: format!(
+                        "duplicate port forward: host port {} on {}",
+                        pf.host,
+                        pf.bind_addr()
+                    ),
+                });
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -797,6 +844,7 @@ pub mod tests {
             mounts: vec![],
             drives: BTreeMap::new(),
             fs: BTreeMap::new(),
+            ports: vec![],
         }
     }
 
@@ -1317,5 +1365,93 @@ memory_mb = 512
             config.network.hostname = hostname.into();
             validate_config(&config).unwrap();
         }
+    }
+
+    #[test]
+    fn parse_config_with_ports() {
+        let toml = r#"
+[image]
+base = "ubuntu.img"
+
+[resources]
+cpus = 1
+memory_mb = 512
+
+[[ports]]
+host = 8080
+guest = 80
+
+[[ports]]
+host = 5432
+guest = 5432
+bind = "0.0.0.0"
+"#;
+        let config: Config = facet_toml::from_str(toml).unwrap();
+        validate_config(&config).unwrap();
+        assert_eq!(config.ports.len(), 2);
+        assert_eq!(config.ports[0].host, 8080);
+        assert_eq!(config.ports[0].guest, 80);
+        assert_eq!(config.ports[0].bind_addr(), "127.0.0.1");
+        assert_eq!(config.ports[1].host, 5432);
+        assert_eq!(config.ports[1].guest, 5432);
+        assert_eq!(config.ports[1].bind_addr(), "0.0.0.0");
+    }
+
+    #[test]
+    fn port_forward_zero_host_rejected() {
+        let mut config = valid_config();
+        config.ports = vec![PortForward {
+            host: 0,
+            guest: 80,
+            ..Default::default()
+        }];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn port_forward_zero_guest_rejected() {
+        let mut config = valid_config();
+        config.ports = vec![PortForward {
+            host: 8080,
+            guest: 0,
+            ..Default::default()
+        }];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn port_forward_duplicate_host_rejected() {
+        let mut config = valid_config();
+        config.ports = vec![
+            PortForward {
+                host: 8080,
+                guest: 80,
+                ..Default::default()
+            },
+            PortForward {
+                host: 8080,
+                guest: 443,
+                ..Default::default()
+            },
+        ];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn port_forward_same_host_different_bind_ok() {
+        let mut config = valid_config();
+        config.ports = vec![
+            PortForward {
+                host: 8080,
+                guest: 80,
+                bind: "127.0.0.1".into(),
+            },
+            PortForward {
+                host: 8080,
+                guest: 443,
+                bind: "0.0.0.0".into(),
+            },
+        ];
+        validate_config(&config).unwrap();
     }
 }

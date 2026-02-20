@@ -230,12 +230,30 @@ impl super::Backend for LibvirtBackend {
         }
 
         // 7b. Wait for agent readiness over vsock
-        if let Some(cid) = parse_vsock_cid(&dom) {
+        let vsock_cid = parse_vsock_cid(&dom);
+        if let Some(cid) = vsock_cid {
             println!("Waiting for agent...");
             crate::agent::wait_for_agent(cid).await?;
         } else {
             tracing::warn!("could not determine vsock CID from live XML");
         }
+
+        // 7c. Start port forwards
+        let forward_handles = if let Some(cid) = vsock_cid
+            && !config.ports.is_empty()
+        {
+            for pf in &config.ports {
+                println!(
+                    "Forwarding {}:{} → guest:{}",
+                    pf.bind_addr(),
+                    pf.host,
+                    pf.guest
+                );
+            }
+            crate::agent::start_port_forwards(cid, &config.ports).await?
+        } else {
+            Vec::new()
+        };
 
         // 8. Start inotify bridge in the background (non-blocking)
         // The bridge task waits for the VM IP internally via virsh subprocess,
@@ -258,7 +276,10 @@ impl super::Backend for LibvirtBackend {
         println!("VM is running. Press Ctrl+C to stop...");
         tokio::signal::ctrl_c().await.ok();
 
-        // Stop inotify bridge on console detach
+        // Stop port forwards and inotify bridge
+        for handle in forward_handles {
+            handle.abort();
+        }
         if let Some(handle) = watch_handle {
             handle.abort();
         }

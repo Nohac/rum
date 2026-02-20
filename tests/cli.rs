@@ -367,3 +367,37 @@ authorized_keys = ["ssh-ed25519 AAAA... user@host"]
         .success()
         .stdout(predicate::str::contains("not defined"));
 }
+
+#[test]
+fn config_with_ports_section() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("rum.toml");
+    let mut f = std::fs::File::create(&config_path).unwrap();
+    write!(
+        f,
+        r#"
+[image]
+base = "ubuntu-24.04"
+
+[resources]
+cpus = 2
+memory_mb = 2048
+
+[[ports]]
+host = 8080
+guest = 80
+
+[[ports]]
+host = 5432
+guest = 5432
+bind = "0.0.0.0"
+"#
+    )
+    .unwrap();
+
+    rum()
+        .args(["--config", config_path.to_str().unwrap(), "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not defined"));
+}

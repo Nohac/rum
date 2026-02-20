@@ -2,8 +2,12 @@ use std::sync::LazyLock;
 
 use roam_stream::{Connector, HandshakeConfig, NoDispatcher, connect};
 use rum_agent::RumAgentClient;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
+use tokio::task::JoinHandle;
 use tokio_vsock::{VsockAddr, VsockStream};
 
+use crate::config::PortForward;
 use crate::error::RumError;
 
 /// Raw rum-agent binary, embedded at compile time via artifact dependency.
@@ -41,7 +45,8 @@ RestartSec=2
 WantedBy=multi-user.target
 ";
 
-const VSOCK_PORT: u32 = 2222;
+const RPC_PORT: u32 = 2222;
+const FORWARD_PORT: u32 = 2223;
 const AGENT_TIMEOUT_SECS: u64 = 120;
 const AGENT_RETRY_INTERVAL_MS: u64 = 500;
 
@@ -53,7 +58,7 @@ impl Connector for VsockConnector {
     type Transport = VsockStream;
 
     async fn connect(&self) -> std::io::Result<VsockStream> {
-        VsockStream::connect(VsockAddr::new(self.cid, VSOCK_PORT)).await
+        VsockStream::connect(VsockAddr::new(self.cid, RPC_PORT)).await
     }
 }
 
@@ -87,4 +92,72 @@ pub async fn wait_for_agent(cid: u32) -> Result<(), RumError> {
             }
         }
     }
+}
+
+/// Start TCP listeners on the host that forward connections to the guest via vsock.
+///
+/// Each `PortForward` binds a TCP listener on `bind:host_port`. When a connection
+/// arrives, it opens a vsock stream to `cid:2223`, sends the 2-byte big-endian
+/// guest port, then proxies bytes bidirectionally.
+///
+/// Returns handles that can be aborted on shutdown.
+pub async fn start_port_forwards(
+    cid: u32,
+    ports: &[PortForward],
+) -> Result<Vec<JoinHandle<()>>, RumError> {
+    let mut handles = Vec::new();
+
+    for pf in ports {
+        let bind_addr = format!("{}:{}", pf.bind_addr(), pf.host);
+        let listener = TcpListener::bind(&bind_addr).await.map_err(|e| RumError::Io {
+            context: format!("binding port forward on {bind_addr}"),
+            source: e,
+        })?;
+
+        let guest_port = pf.guest;
+        let host_port = pf.host;
+
+        let handle = tokio::spawn(async move {
+            loop {
+                let (tcp_stream, _addr) = match listener.accept().await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::error!(port = host_port, "forward accept error: {e}");
+                        continue;
+                    }
+                };
+
+                let cid = cid;
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        proxy_connection(cid, guest_port, tcp_stream).await
+                    {
+                        tracing::error!(
+                            host_port,
+                            guest_port,
+                            "forward proxy error: {e}"
+                        );
+                    }
+                });
+            }
+        });
+
+        handles.push(handle);
+    }
+
+    Ok(handles)
+}
+
+async fn proxy_connection(
+    cid: u32,
+    guest_port: u16,
+    mut tcp: tokio::net::TcpStream,
+) -> Result<(), std::io::Error> {
+    let mut vsock = VsockStream::connect(VsockAddr::new(cid, FORWARD_PORT)).await?;
+
+    // Send 2-byte big-endian target port header
+    vsock.write_u16(guest_port).await?;
+
+    tokio::io::copy_bidirectional(&mut tcp, &mut vsock).await?;
+    Ok(())
 }
