@@ -316,8 +316,9 @@ impl super::Backend for LibvirtBackend {
         };
 
         // 7. Run provisioning scripts via agent
+        let logs = paths::logs_dir(id, name_opt);
         if just_started && let Some(ref agent) = agent_client && !provision_scripts.is_empty() {
-            crate::agent::run_provision(agent, provision_scripts, &mut progress).await?;
+            crate::agent::run_provision(agent, provision_scripts, &mut progress, &logs).await?;
         } else {
             for script in &provision_scripts {
                 progress.skip(&format!("{} (skipped)", script.title));

@@ -40,6 +40,11 @@ pub fn drive_path(id: &str, name: Option<&str>, drive_name: &str) -> PathBuf {
     work_dir(id, name).join(format!("drive-{drive_name}.qcow2"))
 }
 
+/// Per-VM logs directory: `~/.local/share/rum/<id>[-<name>]/logs/`
+pub fn logs_dir(id: &str, name: Option<&str>) -> PathBuf {
+    work_dir(id, name).join("logs")
+}
+
 /// Path to the config_path file that records which config file created this work dir.
 pub fn config_path_file(id: &str, name: Option<&str>) -> PathBuf {
     work_dir(id, name).join("config_path")

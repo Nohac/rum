@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use roam_stream::{Client, Connector, HandshakeConfig, NoDispatcher, connect};
@@ -9,6 +10,7 @@ use tokio_vsock::{VsockAddr, VsockStream};
 
 use crate::config::PortForward;
 use crate::error::RumError;
+use crate::logging::ScriptLogger;
 use crate::progress::StepProgress;
 
 /// Static musl rum-agent binary, embedded at compile time via artifact dependency.
@@ -122,7 +124,9 @@ pub(crate) async fn run_provision(
     agent: &AgentClient,
     scripts: Vec<rum_agent::ProvisionScript>,
     progress: &mut StepProgress,
+    logs_dir: &Path,
 ) -> Result<(), RumError> {
+    let script_names: Vec<String> = scripts.iter().map(|s| s.name.clone()).collect();
     let titles: Vec<String> = scripts.iter().map(|s| s.title.clone()).collect();
 
     let (tx, rx) = roam::channel::<ProvisionEvent>();
@@ -135,12 +139,16 @@ pub(crate) async fn run_provision(
     for (i, title) in titles.iter().enumerate() {
         let rx = rx.clone();
         let title_owned = title.clone();
+        let mut logger = ScriptLogger::new(logs_dir, &script_names[i]).ok();
         let success = progress
             .run(title, |step| async move {
                 let mut rx = rx.lock().await;
                 while let Ok(Some(event)) = rx.recv().await {
                     match event {
                         ProvisionEvent::Done(code) => {
+                            if let Some(lg) = logger.take() {
+                                lg.finish(code == 0);
+                            }
                             if code != 0 {
                                 step.set_failed();
                                 step.set_done_label(format!(
@@ -150,12 +158,19 @@ pub(crate) async fn run_provision(
                             }
                             return true;
                         }
-                        ProvisionEvent::Stdout(line) | ProvisionEvent::Stderr(line) => {
-                            step.log(&line);
+                        ProvisionEvent::Stdout(ref line)
+                        | ProvisionEvent::Stderr(ref line) => {
+                            if let Some(ref mut lg) = logger {
+                                lg.write_line(line);
+                            }
+                            step.log(line);
                         }
                     }
                 }
                 // Channel closed without Done
+                if let Some(lg) = logger.take() {
+                    lg.finish(false);
+                }
                 step.set_failed();
                 step.set_done_label(format!("{title_owned} (connection lost)"));
                 false
@@ -169,6 +184,11 @@ pub(crate) async fn run_provision(
             failed = true;
             break;
         }
+    }
+
+    // Rotate logs for each script name
+    for name in &script_names {
+        crate::logging::rotate_logs(logs_dir, name, 10);
     }
 
     let result = task

@@ -72,7 +72,7 @@ pub enum RumError {
     AgentTimeout { message: String },
 
     #[error("provisioning failed: script '{script}' exited with non-zero status")]
-    #[diagnostic(help("check the script output above for details"))]
+    #[diagnostic(help("run `rum log --failed` to see the full script output"))]
     ProvisionFailed { script: String },
 
     #[error("failed to write config: {path}")]

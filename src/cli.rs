@@ -65,6 +65,19 @@ pub enum Command {
         defaults: bool,
     },
 
+    /// Show provisioning and runtime logs
+    Log {
+        /// Show only the most recent failed script log
+        #[arg(long)]
+        failed: bool,
+        /// List all available script logs
+        #[arg(long)]
+        all: bool,
+        /// Show rum's own internal log
+        #[arg(long)]
+        rum: bool,
+    },
+
     /// Manage cached base images
     Image {
         #[command(subcommand)]

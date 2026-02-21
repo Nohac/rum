@@ -9,6 +9,7 @@ pub mod domain_xml;
 pub mod error;
 pub mod image;
 pub mod iso9660;
+pub mod logging;
 pub mod network_xml;
 pub mod overlay;
 pub mod paths;
