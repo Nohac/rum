@@ -54,15 +54,14 @@ async fn main() -> miette::Result<()> {
             use rum::cloudinit;
             let mounts = sys_config.resolve_mounts()?;
             let seed_path = dir.join("seed.iso");
-            cloudinit::generate_seed_iso(
-                &seed_path,
-                sys_config.hostname(),
-                &mounts,
-                sys_config.config.advanced.autologin,
-                &[],
-                None,
-            )
-            .await?;
+            let seed_config = cloudinit::SeedConfig {
+                hostname: sys_config.hostname(),
+                mounts: &mounts,
+                autologin: sys_config.config.advanced.autologin,
+                ssh_keys: &[],
+                agent_binary: None,
+            };
+            cloudinit::generate_seed_iso(&seed_path, &seed_config).await?;
             println!("Wrote seed ISO to {}", seed_path.display());
         }
     }

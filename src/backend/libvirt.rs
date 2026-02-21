@@ -78,13 +78,14 @@ impl super::Backend for LibvirtBackend {
 
         let agent_binary = crate::agent::AGENT_BINARY;
 
-        let seed_hash = cloudinit::seed_hash(
-            sys_config.hostname(),
-            &mounts,
-            config.advanced.autologin,
-            &ssh_keys,
-            Some(agent_binary),
-        );
+        let seed_config = cloudinit::SeedConfig {
+            hostname: sys_config.hostname(),
+            mounts: &mounts,
+            autologin: config.advanced.autologin,
+            ssh_keys: &ssh_keys,
+            agent_binary: Some(agent_binary),
+        };
+        let seed_hash = cloudinit::seed_hash(&seed_config);
         let seed_path = paths::seed_path(id, name_opt, &seed_hash);
         let xml_path = paths::domain_xml_path(id, name_opt);
         let cache = paths::cache_dir();
@@ -189,15 +190,7 @@ impl super::Backend for LibvirtBackend {
                             }
                         }
                     }
-                    cloudinit::generate_seed_iso(
-                        &seed_path,
-                        sys_config.hostname(),
-                        &mounts,
-                        config.advanced.autologin,
-                        &ssh_keys,
-                        Some(agent_binary),
-                    )
-                    .await
+                    cloudinit::generate_seed_iso(&seed_path, &seed_config).await
                 })
                 .await?;
         } else {

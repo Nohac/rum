@@ -7,26 +7,29 @@ use crate::config::{BtrfsFs, ResolvedFs, ResolvedMount, SimpleFs, ZfsFs};
 use crate::error::RumError;
 use crate::iso9660::{self, IsoFile};
 
+/// Configuration for cloud-init seed ISO generation.
+pub struct SeedConfig<'a> {
+    pub hostname: &'a str,
+    pub mounts: &'a [ResolvedMount],
+    pub autologin: bool,
+    pub ssh_keys: &'a [String],
+    pub agent_binary: Option<&'a [u8]>,
+}
+
 /// Compute a short hash of the cloud-init inputs for cache-busting the seed ISO filename.
-pub fn seed_hash(
-    hostname: &str,
-    mounts: &[ResolvedMount],
-    autologin: bool,
-    ssh_keys: &[String],
-    agent_binary: Option<&[u8]>,
-) -> String {
+pub fn seed_hash(config: &SeedConfig) -> String {
     let mut hasher = DefaultHasher::new();
-    hostname.hash(&mut hasher);
-    for m in mounts {
+    config.hostname.hash(&mut hasher);
+    for m in config.mounts {
         m.tag.hash(&mut hasher);
         m.target.hash(&mut hasher);
         m.readonly.hash(&mut hasher);
     }
-    autologin.hash(&mut hasher);
-    for k in ssh_keys {
+    config.autologin.hash(&mut hasher);
+    for k in config.ssh_keys {
         k.hash(&mut hasher);
     }
-    if let Some(agent) = agent_binary {
+    if let Some(agent) = config.agent_binary {
         agent.hash(&mut hasher);
     }
     format!("{:016x}", hasher.finish())
@@ -38,11 +41,7 @@ pub fn seed_hash(
 /// included in the ISO and installed via cloud-init runcmd on first boot.
 pub async fn generate_seed_iso(
     seed_path: &Path,
-    hostname: &str,
-    mounts: &[ResolvedMount],
-    autologin: bool,
-    ssh_keys: &[String],
-    agent_binary: Option<&[u8]>,
+    config: &SeedConfig<'_>,
 ) -> Result<(), RumError> {
     if let Some(parent) = seed_path.parent() {
         tokio::fs::create_dir_all(parent)
@@ -53,8 +52,9 @@ pub async fn generate_seed_iso(
             })?;
     }
 
+    let hostname = config.hostname;
     let meta_data = format!("instance-id: {hostname}\nlocal-hostname: {hostname}\n");
-    let user_data = build_user_data(mounts, autologin, ssh_keys, agent_binary);
+    let user_data = build_user_data(config);
     // Network config v2 for cloud-init NoCloud datasource.
     // Note: no outer "network:" wrapper — the file IS the network config directly.
     let network_config =
@@ -94,12 +94,11 @@ ExecStart=
 ExecStart=-/sbin/agetty --autologin rum --noclear --keep-baud 115200,38400,9600 %I $TERM
 ";
 
-fn build_user_data(
-    mounts: &[ResolvedMount],
-    autologin: bool,
-    ssh_keys: &[String],
-    agent_binary: Option<&[u8]>,
-) -> String {
+fn build_user_data(config: &SeedConfig) -> String {
+    let mounts = config.mounts;
+    let autologin = config.autologin;
+    let ssh_keys = config.ssh_keys;
+    let agent_binary = config.agent_binary;
     let mut user = value!({
         "name": "rum",
         "plain_text_passwd": "rum",
@@ -359,22 +358,35 @@ pub fn build_drive_script(fs: &[ResolvedFs]) -> String {
 mod tests {
     use super::*;
 
+    fn default_seed_config() -> SeedConfig<'static> {
+        SeedConfig {
+            hostname: "",
+            mounts: &[],
+            autologin: false,
+            ssh_keys: &[],
+            agent_binary: None,
+        }
+    }
+
     #[test]
     fn user_data_is_valid_cloud_config() {
-        let ud = build_user_data(&[], false, &[], None);
+        let config = default_seed_config();
+        let ud = build_user_data(&config);
         assert!(ud.starts_with("#cloud-config\n"));
     }
 
     #[test]
     fn user_data_contains_user() {
-        let ud = build_user_data(&[], false, &[], None);
+        let config = default_seed_config();
+        let ud = build_user_data(&config);
         assert!(ud.contains("name: rum"));
         assert!(ud.contains("lock_passwd: false"));
     }
 
     #[test]
     fn user_data_autologin_dropin_in_write_files() {
-        let ud = build_user_data(&[], true, &[], None);
+        let config = SeedConfig { autologin: true, ..default_seed_config() };
+        let ud = build_user_data(&config);
         let write_files = &ud[ud.find("write_files:").unwrap()..ud.find("runcmd:").unwrap()];
         assert!(write_files.contains("autologin.conf"));
         assert!(write_files.contains("--autologin rum"));
@@ -385,7 +397,8 @@ mod tests {
 
     #[test]
     fn user_data_autologin_absent_when_disabled() {
-        let ud = build_user_data(&[], false, &[], None);
+        let config = default_seed_config();
+        let ud = build_user_data(&config);
         assert!(!ud.contains("autologin.conf"));
         assert!(!ud.contains("--autologin rum"));
         assert!(!ud.contains("serial-getty@ttyS0.service"));
@@ -393,7 +406,8 @@ mod tests {
 
     #[test]
     fn user_data_runcmd_restarts_getty() {
-        let ud = build_user_data(&[], true, &[], None);
+        let config = SeedConfig { autologin: true, ..default_seed_config() };
+        let ud = build_user_data(&config);
         assert!(ud.contains("runcmd:"));
         assert!(ud.contains("daemon-reload"));
         assert!(ud.contains("serial-getty@ttyS0.service"));
@@ -408,7 +422,8 @@ mod tests {
             tag: "mnt_project".into(),
             inotify: false,
         }];
-        let ud = build_user_data(&mounts, false, &[], None);
+        let config = SeedConfig { mounts: &mounts, ..default_seed_config() };
+        let ud = build_user_data(&config);
         assert!(ud.contains("mounts:"));
         assert!(ud.contains("mnt_project"));
         assert!(ud.contains("/mnt/project"));
@@ -513,7 +528,8 @@ mod tests {
             "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest auto-generated".to_string(),
             "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest extra-key".to_string(),
         ];
-        let ud = build_user_data(&[], false, &keys, None);
+        let config = SeedConfig { ssh_keys: &keys, ..default_seed_config() };
+        let ud = build_user_data(&config);
         assert!(ud.contains("ssh_authorized_keys:"));
         assert!(ud.contains("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest auto-generated"));
         assert!(ud.contains("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest extra-key"));
@@ -521,7 +537,8 @@ mod tests {
 
     #[test]
     fn user_data_without_ssh_keys_omits_authorized_keys() {
-        let ud = build_user_data(&[], false, &[], None);
+        let config = default_seed_config();
+        let ud = build_user_data(&config);
         assert!(!ud.contains("ssh_authorized_keys"));
     }
 }

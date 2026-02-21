@@ -1,6 +1,6 @@
 # Refactor build_user_data to take a config struct instead of positional args
 
-**ID:** 230abd52 | **Status:** Open | **Created:** 2026-02-20T20:04:36+01:00
+**ID:** 230abd52 | **Status:** Done | **Created:** 2026-02-20T20:04:36+01:00
 
 `build_user_data()`, `seed_hash()`, and `generate_seed_iso()` in `src/cloudinit.rs` take 7-9 positional arguments. This makes call sites fragile and hard to read — every new feature (e.g. `has_agent`) adds another bool to the end.
 
