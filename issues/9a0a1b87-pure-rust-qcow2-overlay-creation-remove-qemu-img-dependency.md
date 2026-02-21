@@ -1,6 +1,6 @@
 # Pure Rust qcow2 overlay creation (remove qemu-img dependency)
 
-**ID:** 9a0a1b87 | **Status:** Open | **Created:** 2026-02-20T21:19:26+01:00
+**ID:** 9a0a1b87 | **Status:** Done | **Created:** 2026-02-20T21:19:26+01:00
 
 `overlay.rs` shells out to `qemu-img create -f qcow2 -b <base> -F qcow2 <overlay>` to create a qcow2 overlay backed by a base image. This is the only remaining external tool dependency besides libvirt itself.
 

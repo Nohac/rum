@@ -1,25 +1,26 @@
-//! Minimal QCOW2 image generator for empty virtual disks.
+//! Minimal QCOW2 image generator for virtual disks.
 //!
 //! # Background
 //!
 //! QCOW2 (QEMU Copy-On-Write version 2) is the native disk image format for
 //! QEMU/KVM virtual machines.  Unlike raw images, QCOW2 supports thin
-//! provisioning (sparse allocation), snapshots, and compression.  A "20 GB"
-//! QCOW2 file with no data written only occupies ~256 KB on disk — the space
-//! is allocated on demand as the guest writes to it.
+//! provisioning (sparse allocation), snapshots, backing files, and compression.
+//! A "20 GB" QCOW2 file with no data written only occupies ~256 KB on disk —
+//! the space is allocated on demand as the guest writes to it.
 //!
 //! # Why we need this
 //!
-//! rum creates additional virtual disks for user-defined `[[drives]]` entries.
-//! Rather than shelling out to `qemu-img create`, we generate valid QCOW2
-//! images directly in Rust.  This keeps rum free of external tool dependencies
-//! for disk creation (the same approach as our ISO 9660 generator).
+//! rum creates additional virtual disks for user-defined `[[drives]]` entries
+//! and qcow2 overlay images backed by cloud base images.  Rather than shelling
+//! out to `qemu-img create`, we generate valid QCOW2 images directly in Rust.
+//! This keeps rum free of external tool dependencies for disk creation (the
+//! same approach as our ISO 9660 generator).
 //!
 //! # Scope
 //!
-//! This module only creates **empty** QCOW2 v2 images with no backing file,
-//! no encryption, no compression, and no snapshots.  It is not a general-
-//! purpose QCOW2 library — it does exactly what empty data disks need.
+//! This module creates **empty** QCOW2 v2 images and **overlay** images with
+//! a backing file.  No encryption, no compression, no snapshots.  It is not a
+//! general-purpose QCOW2 library — it does exactly what rum needs.
 //!
 //! # Format overview
 //!
@@ -45,6 +46,11 @@
 //! ```
 //!
 //! Total file size: 4 clusters = 256 KB (with 64 KB clusters).
+//!
+//! For overlay images with a backing file, the layout is the same except
+//! the header stores the backing file path right after byte 72, still
+//! within cluster 0.  The backing file offset and length header fields
+//! are set accordingly.
 //!
 //! # References
 //!
@@ -109,6 +115,56 @@ pub fn create_qcow2(path: &Path, size: &str) -> Result<(), RumError> {
     })?;
 
     tracing::info!(path = %path.display(), size, "created qcow2 image");
+    Ok(())
+}
+
+/// Create a QCOW2 overlay image at `overlay_path` backed by `backing_file`.
+///
+/// The backing file must be an existing QCOW2 image.  Its virtual size is
+/// read from the header and copied into the overlay.  The backing file path
+/// is stored as its absolute canonical form.
+pub fn create_qcow2_overlay(overlay_path: &Path, backing_file: &Path) -> Result<(), RumError> {
+    if let Some(parent) = overlay_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| RumError::Io {
+            context: format!("creating directory {}", parent.display()),
+            source: e,
+        })?;
+    }
+
+    let canonical = std::fs::canonicalize(backing_file).map_err(|e| RumError::Io {
+        context: format!("resolving backing file path {}", backing_file.display()),
+        source: e,
+    })?;
+    let backing_path_str = canonical.to_string_lossy();
+
+    // Read the backing file's virtual size from its QCOW2 header (bytes 24..32).
+    let backing_header = {
+        use std::io::Read;
+        let mut f = std::fs::File::open(&canonical).map_err(|e| RumError::Io {
+            context: format!("opening backing file {}", canonical.display()),
+            source: e,
+        })?;
+        let mut buf = [0u8; 32];
+        f.read_exact(&mut buf).map_err(|e| RumError::Io {
+            context: format!("reading backing file header {}", canonical.display()),
+            source: e,
+        })?;
+        buf
+    };
+    let virtual_size = u64::from_be_bytes(backing_header[24..32].try_into().unwrap());
+
+    let image = build_qcow2_with_backing(virtual_size, &backing_path_str);
+
+    let mut file = std::fs::File::create(overlay_path).map_err(|e| RumError::Io {
+        context: format!("creating qcow2 overlay {}", overlay_path.display()),
+        source: e,
+    })?;
+    file.write_all(&image).map_err(|e| RumError::Io {
+        context: format!("writing qcow2 overlay {}", overlay_path.display()),
+        source: e,
+    })?;
+
+    tracing::info!(path = %overlay_path.display(), backing = %canonical.display(), "created qcow2 overlay");
     Ok(())
 }
 
@@ -195,6 +251,31 @@ fn build_qcow2(virtual_size: u64) -> Vec<u8> {
     image
 }
 
+/// Build a QCOW2 v2 overlay image with a backing file.
+///
+/// The structure is identical to [`build_qcow2`] — 4 clusters with the same
+/// layout — except the header includes:
+/// - Backing file offset (byte 8) pointing to offset 72 (right after header)
+/// - Backing file name length (byte 16)
+/// - The backing file path string written at byte 72 within cluster 0
+fn build_qcow2_with_backing(virtual_size: u64, backing_path: &str) -> Vec<u8> {
+    let mut image = build_qcow2(virtual_size);
+
+    let backing_bytes = backing_path.as_bytes();
+    let backing_offset: u64 = 72; // right after the 72-byte header
+
+    // Set backing file offset (bytes 8..16)
+    write_be64(&mut image, 8, backing_offset);
+
+    // Set backing file name length (bytes 16..20)
+    write_be32(&mut image, 16, backing_bytes.len() as u32);
+
+    // Write the backing file path string at offset 72 (still within cluster 0)
+    image[72..72 + backing_bytes.len()].copy_from_slice(backing_bytes);
+
+    image
+}
+
 /// Calculate the number of L1 table entries needed for a given virtual size.
 ///
 /// Each L1 entry covers one L2 table's worth of data.  With 64 KB clusters,
@@ -269,5 +350,80 @@ mod tests {
         let data = std::fs::read(&path).unwrap();
         assert_eq!(&data[0..4], &[0x51, 0x46, 0x49, 0xFB]);
         assert_eq!(data.len(), CLUSTER_SIZE * 4);
+    }
+
+    #[test]
+    fn overlay_has_magic() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base.qcow2");
+        create_qcow2(&base, "1G").unwrap();
+
+        let overlay = dir.path().join("overlay.qcow2");
+        create_qcow2_overlay(&overlay, &base).unwrap();
+
+        let data = std::fs::read(&overlay).unwrap();
+        assert_eq!(&data[0..4], &[0x51, 0x46, 0x49, 0xFB]);
+    }
+
+    #[test]
+    fn overlay_backing_file_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base.qcow2");
+        create_qcow2(&base, "1G").unwrap();
+
+        let overlay = dir.path().join("overlay.qcow2");
+        create_qcow2_overlay(&overlay, &base).unwrap();
+
+        let data = std::fs::read(&overlay).unwrap();
+        let offset = u64::from_be_bytes(data[8..16].try_into().unwrap());
+        assert_eq!(offset, 72);
+    }
+
+    #[test]
+    fn overlay_backing_file_name_length() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base.qcow2");
+        create_qcow2(&base, "1G").unwrap();
+
+        let canonical = std::fs::canonicalize(&base).unwrap();
+        let expected_len = canonical.to_string_lossy().len() as u32;
+
+        let overlay = dir.path().join("overlay.qcow2");
+        create_qcow2_overlay(&overlay, &base).unwrap();
+
+        let data = std::fs::read(&overlay).unwrap();
+        let name_len = u32::from_be_bytes(data[16..20].try_into().unwrap());
+        assert_eq!(name_len, expected_len);
+    }
+
+    #[test]
+    fn overlay_contains_backing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base.qcow2");
+        create_qcow2(&base, "1G").unwrap();
+
+        let canonical = std::fs::canonicalize(&base).unwrap();
+        let path_str = canonical.to_string_lossy();
+
+        let overlay = dir.path().join("overlay.qcow2");
+        create_qcow2_overlay(&overlay, &base).unwrap();
+
+        let data = std::fs::read(&overlay).unwrap();
+        let stored = std::str::from_utf8(&data[72..72 + path_str.len()]).unwrap();
+        assert_eq!(stored, path_str.as_ref());
+    }
+
+    #[test]
+    fn overlay_inherits_virtual_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base.qcow2");
+        create_qcow2(&base, "20G").unwrap();
+
+        let overlay = dir.path().join("overlay.qcow2");
+        create_qcow2_overlay(&overlay, &base).unwrap();
+
+        let data = std::fs::read(&overlay).unwrap();
+        let overlay_size = u64::from_be_bytes(data[24..32].try_into().unwrap());
+        assert_eq!(overlay_size, 20 * 1024 * 1024 * 1024);
     }
 }
