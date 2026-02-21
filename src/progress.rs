@@ -169,6 +169,39 @@ impl StepProgress {
             None
         };
 
+        // Guard that cleans up the spinner if this future is cancelled
+        // (e.g. dropped by tokio::select!). On normal completion we
+        // defuse it so the regular cleanup path runs instead.
+        struct CancelGuard {
+            ticker: Option<tokio::task::JoinHandle<()>>,
+            state: Arc<Mutex<StepState>>,
+            term: Term,
+            mode: OutputMode,
+            defused: bool,
+        }
+        impl Drop for CancelGuard {
+            fn drop(&mut self) {
+                if let Some(h) = self.ticker.take() {
+                    h.abort();
+                }
+                if !self.defused && self.mode != OutputMode::Plain {
+                    let st = self.state.lock().unwrap();
+                    if st.drawn_lines > 0 {
+                        self.term.move_cursor_up(st.drawn_lines).ok();
+                        self.term.clear_to_end_of_screen().ok();
+                    }
+                    self.term.show_cursor().ok();
+                }
+            }
+        }
+        let mut cancel_guard = CancelGuard {
+            ticker: tick_handle,
+            state: state.clone(),
+            term: Term::stderr(),
+            mode: self.mode,
+            defused: false,
+        };
+
         let step = Step {
             state: state.clone(),
             mode: self.mode,
@@ -176,8 +209,9 @@ impl StepProgress {
 
         let result = f(step).await;
 
-        // Stop spinner tick
-        if let Some(handle) = tick_handle {
+        // Normal completion — defuse the guard and do explicit cleanup
+        cancel_guard.defused = true;
+        if let Some(handle) = cancel_guard.ticker.take() {
             handle.abort();
         }
 

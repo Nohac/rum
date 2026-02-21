@@ -141,8 +141,17 @@ impl super::Backend for LibvirtBackend {
         //   6. wait for agent
         //   per-script: drives/fs, system provision, boot provision
         //   last. ready
-        let total_steps = 7 + provision_scripts.len();
+        let total_steps = 8 + provision_scripts.len();
         let mut progress = StepProgress::new(total_steps, mode);
+
+        let ctrl_c = tokio::signal::ctrl_c();
+        tokio::pin!(ctrl_c);
+        let vm_started = std::sync::atomic::AtomicBool::new(false);
+
+        let result: Result<(), RumError> = tokio::select! {
+            biased;
+            _ = &mut ctrl_c => Ok(()),
+            result = async {
 
         // 1. Ensure base image
         let image_cached = image::is_cached(&config.image.base, &cache);
@@ -286,6 +295,11 @@ impl super::Backend for LibvirtBackend {
             tracing::info!(vm_name, "VM already running");
         }
 
+        vm_started.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let uri = sys_config.libvirt_uri().to_string();
+        let vm_name_owned = vm_name.to_string();
+
         // 6. Wait for agent readiness over vsock
         let vsock_cid = parse_vsock_cid(&dom);
         let agent_client = if let Some(cid) = vsock_cid {
@@ -301,7 +315,7 @@ impl super::Backend for LibvirtBackend {
             None
         };
 
-        // 7. Run provisioning scripts via agent (single RPC call, one step per script)
+        // 7. Run provisioning scripts via agent
         if just_started && let Some(ref agent) = agent_client && !provision_scripts.is_empty() {
             crate::agent::run_provision(agent, provision_scripts, &mut progress).await?;
         } else {
@@ -323,7 +337,6 @@ impl super::Backend for LibvirtBackend {
             Vec::new()
         };
 
-        // Start inotify bridge in the background (non-blocking)
         let watch_handle = if mounts.iter().any(|m| m.inotify && !m.readonly) {
             Some(crate::watch::start_inotify_bridge(
                 &mounts,
@@ -338,7 +351,6 @@ impl super::Backend for LibvirtBackend {
 
         progress.skip("Ready");
 
-        // Show port forward info lines
         for pf in &config.ports {
             progress.info(&format!(
                 "Forwarding {}:{} \u{2192} guest:{}",
@@ -350,15 +362,13 @@ impl super::Backend for LibvirtBackend {
 
         progress.println("VM is running. Press Ctrl+C to stop...");
 
-        // Wait for either Ctrl+C or the domain to be stopped externally
-        let vm_name_owned = vm_name.to_string();
-        let uri = sys_config.libvirt_uri().to_string();
-        let shutdown_reason = tokio::select! {
-            _ = tokio::signal::ctrl_c() => "ctrl_c",
-            _ = poll_domain_state(&uri, &vm_name_owned) => "external",
+        // Wait for Ctrl+C or external domain stop
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = poll_domain_state(&uri, &vm_name_owned) => {},
         };
 
-        // Stop log subscription, port forwards and inotify bridge
+        // Clean up background tasks
         if let Some(handle) = log_handle {
             handle.abort();
         }
@@ -369,21 +379,32 @@ impl super::Backend for LibvirtBackend {
             handle.abort();
         }
 
-        if shutdown_reason == "external" {
-            println!("VM '{vm_name}' was stopped externally.");
-        } else {
-            // Ctrl+C: graceful ACPI shutdown
+        Ok::<_, RumError>(())
+            } => result,
+        };
+
+        // Unified shutdown after select
+        if vm_started.load(std::sync::atomic::Ordering::SeqCst) {
             let conn = connect(sys_config)?;
-            if let Ok(dom) = Domain::lookup_by_name(&conn, vm_name)
-                && is_running(&dom)
-            {
-                println!("Shutting down VM '{vm_name}'...");
-                shutdown_domain(&dom).await?;
-                println!("VM '{vm_name}' stopped.");
+            let still_running = Domain::lookup_by_name(&conn, vm_name)
+                .ok()
+                .is_some_and(|d| is_running(&d));
+
+            if still_running {
+                progress
+                    .run("Shutting down VM...", |_step| async {
+                        let dom = Domain::lookup_by_name(&conn, vm_name).unwrap();
+                        shutdown_domain(&dom).await
+                    })
+                    .await?;
+            } else {
+                progress.skip("VM stopped externally");
             }
+        } else {
+            progress.skip("Shutdown (not needed)");
         }
 
-        Ok(())
+        result
     }
 
     async fn down(&self, sys_config: &SystemConfig) -> Result<(), RumError> {
