@@ -1,6 +1,6 @@
 # Skipped steps should show dash instead of checkmark
 
-**ID:** efe2e24c | **Status:** Open | **Created:** 2026-02-21T13:54:19+01:00
+**ID:** efe2e24c | **Status:** Done | **Created:** 2026-02-21T13:54:19+01:00
 
 Steps that don't need to run (cached, skipped, already done) currently show a green `✓` checkmark, same as steps that actually executed. This makes it hard to tell what actually happened.
 

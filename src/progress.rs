@@ -244,12 +244,12 @@ impl StepProgress {
         let prefix = format!("{}/{}", self.current_step, self.total_steps);
 
         if self.mode == OutputMode::Plain {
-            println!("[{prefix}] \u{2713} {label}");
+            println!("[{prefix}] \u{2014} {label}");
         } else {
             self.term
                 .write_line(&format!(
-                    "[{prefix}] \u{2713} {}",
-                    style(label).green()
+                    "[{prefix}] \u{2014} {}",
+                    style(label).blue()
                 ))
                 .ok();
         }
