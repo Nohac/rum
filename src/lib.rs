@@ -12,6 +12,7 @@ pub mod iso9660;
 pub mod network_xml;
 pub mod overlay;
 pub mod paths;
+pub mod progress;
 pub mod watch;
 pub mod init;
 pub mod qcow2;

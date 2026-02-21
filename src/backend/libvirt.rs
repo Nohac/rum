@@ -1,12 +1,12 @@
-
 use indicatif::ProgressBar;
 use virt::connect::Connect;
 use virt::domain::Domain;
 use virt::error as virt_error;
 use virt::network::Network;
 
-use crate::config::{ResolvedFs, SystemConfig};
+use crate::config::SystemConfig;
 use crate::error::RumError;
+use crate::progress::{OutputMode, StepProgress};
 use crate::{cloudinit, domain_xml, image, network_xml, overlay, paths, qcow2};
 
 use ssh_key::private::Ed25519Keypair;
@@ -30,7 +30,12 @@ impl Drop for ConnGuard {
 pub struct LibvirtBackend;
 
 impl super::Backend for LibvirtBackend {
-    async fn up(&self, sys_config: &SystemConfig, reset: bool) -> Result<(), RumError> {
+    async fn up(
+        &self,
+        sys_config: &SystemConfig,
+        reset: bool,
+        mode: OutputMode,
+    ) -> Result<(), RumError> {
         let id = &sys_config.id;
         let name_opt = sys_config.name.as_deref();
         let vm_name = sys_config.display_name();
@@ -96,116 +101,160 @@ impl super::Backend for LibvirtBackend {
             let _ = tokio::fs::remove_dir_all(&work).await;
         }
 
+        // Compute step count: 7 base + one per provisioning phase
+        //   1. base image
+        //   2. overlay + drives
+        //   3. cloud-init seed
+        //   4. domain config + network
+        //   5. start VM
+        //   6. wait for agent
+        //   per-phase: drives/fs, system provision, boot provision
+        //   last. ready
+        let has_drive_provision = !resolved_fs.is_empty();
+        let has_system_provision = config.provision.system.is_some();
+        let has_boot_provision = config.provision.boot.is_some();
+        let n_provision = usize::from(has_drive_provision)
+            + usize::from(has_system_provision)
+            + usize::from(has_boot_provision);
+        let total_steps = 7 + n_provision;
+        let mut progress = StepProgress::new(total_steps, mode);
+
         // 1. Ensure base image
-        println!("Ensuring base image...");
-        let base = image::ensure_base_image(&config.image.base, &cache).await?;
+        let image_cached = image::is_cached(&config.image.base, &cache);
+        let base = if image_cached {
+            progress.skip("Base image cached");
+            image::ensure_base_image(&config.image.base, &cache, None).await?
+        } else {
+            progress
+                .run("Downloading base image...", |step| async move {
+                    let path = image::ensure_base_image(
+                        &config.image.base,
+                        &cache,
+                        Some(step.multi()),
+                    )
+                    .await?;
+                    Ok::<_, RumError>(path)
+                })
+                .await?
+        };
 
-        // 2. Create overlay if absent
-        if !overlay_path.exists() {
-            println!("Creating disk overlay...");
-            overlay::create_overlay(&base, &overlay_path).await?;
-        }
-
-        // 2b. Create extra drive images if absent
-        for d in &drives {
-            if !d.path.exists() {
-                println!("Creating drive '{}'...", d.name);
-                qcow2::create_qcow2(&d.path, &d.size)?;
-            }
-        }
-
-        // 3. Generate seed ISO if inputs changed (hash-keyed filename)
-        if !seed_path.exists() {
-            println!("Generating cloud-init seed...");
-            // Remove old seed ISOs with different hashes
-            if let Ok(mut entries) = tokio::fs::read_dir(&work).await {
-                while let Ok(Some(entry)) = entries.next_entry().await {
-                    let fname = entry.file_name();
-                    if let Some(s) = fname.to_str()
-                        && s.starts_with("seed-")
-                        && s.ends_with(".iso")
-                    {
-                        let _ = tokio::fs::remove_file(entry.path()).await;
+        // 2. Create overlay + extra drives
+        if !overlay_path.exists() || drives.iter().any(|d| !d.path.exists()) {
+            progress
+                .run("Creating disk overlay...", |_step| async {
+                    if !overlay_path.exists() {
+                        overlay::create_overlay(&base, &overlay_path).await?;
                     }
-                }
-            }
-            cloudinit::generate_seed_iso(
-                &seed_path,
-                sys_config.hostname(),
-                &mounts,
-                config.advanced.autologin,
-                &ssh_keys,
-                Some(agent_binary),
-            )
-            .await?;
+                    for d in &drives {
+                        if !d.path.exists() {
+                            qcow2::create_qcow2(&d.path, &d.size)?;
+                        }
+                    }
+                    Ok::<_, RumError>(())
+                })
+                .await?;
+        } else {
+            progress.skip("Disk overlay ready");
         }
 
-        // 4. Generate domain XML
-        let xml = domain_xml::generate_domain_xml(
-            sys_config,
-            &overlay_path,
-            &seed_path,
-            &mounts,
-            &drives,
-        );
+        // 3. Generate seed ISO if inputs changed
+        if !seed_path.exists() {
+            progress
+                .run("Generating cloud-init seed...", |_step| async {
+                    // Remove old seed ISOs with different hashes
+                    if let Ok(mut entries) = tokio::fs::read_dir(&work).await {
+                        while let Ok(Some(entry)) = entries.next_entry().await {
+                            let fname = entry.file_name();
+                            if let Some(s) = fname.to_str()
+                                && s.starts_with("seed-")
+                                && s.ends_with(".iso")
+                            {
+                                let _ = tokio::fs::remove_file(entry.path()).await;
+                            }
+                        }
+                    }
+                    cloudinit::generate_seed_iso(
+                        &seed_path,
+                        sys_config.hostname(),
+                        &mounts,
+                        config.advanced.autologin,
+                        &ssh_keys,
+                        Some(agent_binary),
+                    )
+                    .await
+                })
+                .await?;
+        } else {
+            progress.skip("Cloud-init seed ready");
+        }
 
-        // 5. Define or redefine domain
-        println!("Configuring VM...");
-        let existing = Domain::lookup_by_name(&conn, vm_name);
-        match existing {
-            Ok(dom) => {
-                if domain_xml::xml_has_changed(
+        // 4. Configure domain + network
+        progress
+            .run("Configuring domain...", |_step| async {
+                let xml = domain_xml::generate_domain_xml(
                     sys_config,
                     &overlay_path,
                     &seed_path,
                     &mounts,
                     &drives,
-                    &xml_path,
-                ) {
-                    if is_running(&dom) {
-                        return Err(RumError::RequiresRestart {
-                            name: vm_name.to_string(),
-                        });
+                );
+
+                let existing = Domain::lookup_by_name(&conn, vm_name);
+                match existing {
+                    Ok(dom) => {
+                        if domain_xml::xml_has_changed(
+                            sys_config,
+                            &overlay_path,
+                            &seed_path,
+                            &mounts,
+                            &drives,
+                            &xml_path,
+                        ) {
+                            if is_running(&dom) {
+                                return Err(RumError::RequiresRestart {
+                                    name: vm_name.to_string(),
+                                });
+                            }
+                            dom.undefine().map_err(|e| RumError::Libvirt {
+                                message: format!("failed to undefine domain: {e}"),
+                                hint: "check libvirt permissions".into(),
+                            })?;
+                            define_domain(&conn, &xml)?;
+                            tracing::info!(vm_name, "domain redefined with updated config");
+                        }
                     }
-                    dom.undefine().map_err(|e| RumError::Libvirt {
-                        message: format!("failed to undefine domain: {e}"),
-                        hint: "check libvirt permissions".into(),
-                    })?;
-                    define_domain(&conn, &xml)?;
-                    tracing::info!(vm_name, "domain redefined with updated config");
+                    Err(_) => {
+                        define_domain(&conn, &xml)?;
+                        tracing::info!(vm_name, "domain defined");
+                    }
                 }
-            }
-            Err(_) => {
-                define_domain(&conn, &xml)?;
-                tracing::info!(vm_name, "domain defined");
-            }
-        }
 
-        // Save XML for future change detection
-        tokio::fs::write(&xml_path, &xml)
-            .await
-            .map_err(|e| RumError::Io {
-                context: format!("saving domain XML to {}", xml_path.display()),
-                source: e,
-            })?;
+                // Save XML for future change detection
+                tokio::fs::write(&xml_path, &xml)
+                    .await
+                    .map_err(|e| RumError::Io {
+                        context: format!("saving domain XML to {}", xml_path.display()),
+                        source: e,
+                    })?;
 
-        // Write config_path file for stale state detection
-        let cp_file = paths::config_path_file(id, name_opt);
-        tokio::fs::write(
-            &cp_file,
-            sys_config.config_path.to_string_lossy().as_bytes(),
-        )
-        .await
-        .map_err(|e| RumError::Io {
-            context: format!("saving config path to {}", cp_file.display()),
-            source: e,
-        })?;
+                // Write config_path file for stale state detection
+                let cp_file = paths::config_path_file(id, name_opt);
+                tokio::fs::write(
+                    &cp_file,
+                    sys_config.config_path.to_string_lossy().as_bytes(),
+                )
+                .await
+                .map_err(|e| RumError::Io {
+                    context: format!("saving config path to {}", cp_file.display()),
+                    source: e,
+                })?;
 
-        // 6. Ensure networks are active
-        println!("Checking network...");
-        ensure_networks(&conn, sys_config)?;
+                ensure_networks(&conn, sys_config)?;
+                Ok(())
+            })
+            .await?;
 
-        // 7. Start if not running
+        // 5. Start VM
         let dom = Domain::lookup_by_name(&conn, vm_name).map_err(|e| RumError::Libvirt {
             message: format!("domain lookup failed: {e}"),
             hint: "domain should have been defined above".into(),
@@ -213,66 +262,114 @@ impl super::Backend for LibvirtBackend {
 
         let just_started = !is_running(&dom);
         if just_started {
-            println!("Starting VM...");
-            dom.create().map_err(|e| RumError::Libvirt {
-                message: format!("failed to start domain: {e}"),
-                hint: "check `virsh -c qemu:///system start` for details".into(),
-            })?;
-            tracing::info!(vm_name, "VM started");
+            progress
+                .run("Starting VM...", |_step| async {
+                    dom.create().map_err(|e| RumError::Libvirt {
+                        message: format!("failed to start domain: {e}"),
+                        hint: "check `virsh -c qemu:///system start` for details".into(),
+                    })?;
+                    tracing::info!(vm_name, "VM started");
+                    Ok::<_, RumError>(())
+                })
+                .await?;
         } else {
+            progress.skip("VM already running");
             tracing::info!(vm_name, "VM already running");
         }
 
-        // 7b. Wait for agent readiness over vsock
+        // 6. Wait for agent readiness over vsock
         let vsock_cid = parse_vsock_cid(&dom);
         let agent_client = if let Some(cid) = vsock_cid {
-            println!("Waiting for agent...");
-            Some(crate::agent::wait_for_agent(cid).await?)
+            let client = progress
+                .run("Waiting for agent...", |_step| async {
+                    crate::agent::wait_for_agent(cid).await
+                })
+                .await?;
+            Some(client)
         } else {
+            progress.skip("Agent not available");
             tracing::warn!("could not determine vsock CID from live XML");
             None
         };
 
-        // 7b2. Start log subscription
+        // 7. Run provisioning scripts via agent (one step per phase)
+        if has_drive_provision {
+            if just_started && let Some(ref agent) = agent_client {
+                let script = rum_agent::ProvisionScript {
+                    name: "rum-drives".into(),
+                    content: cloudinit::build_drive_script(&resolved_fs),
+                    order: 0,
+                    run_on: rum_agent::RunOn::System,
+                };
+                progress
+                    .run("Setting up drives and filesystems...", |step| async move {
+                        crate::agent::run_provision(agent, vec![script], |line| {
+                            step.log(line);
+                        })
+                        .await
+                    })
+                    .await?;
+            } else {
+                progress.skip("Drives and filesystems ready");
+            }
+        }
+
+        if has_system_provision {
+            if just_started && let Some(ref agent) = agent_client {
+                let script = rum_agent::ProvisionScript {
+                    name: "rum-system".into(),
+                    content: config.provision.system.as_ref().unwrap().script.clone(),
+                    order: 1,
+                    run_on: rum_agent::RunOn::System,
+                };
+                progress
+                    .run("Running system provisioning...", |step| async move {
+                        crate::agent::run_provision(agent, vec![script], |line| {
+                            step.log(line);
+                        })
+                        .await
+                    })
+                    .await?;
+            } else {
+                progress.skip("System provisioning skipped");
+            }
+        }
+
+        if has_boot_provision {
+            if just_started && let Some(ref agent) = agent_client {
+                let script = rum_agent::ProvisionScript {
+                    name: "rum-boot".into(),
+                    content: config.provision.boot.as_ref().unwrap().script.clone(),
+                    order: 2,
+                    run_on: rum_agent::RunOn::Boot,
+                };
+                progress
+                    .run("Running boot provisioning...", |step| async move {
+                        crate::agent::run_provision(agent, vec![script], |line| {
+                            step.log(line);
+                        })
+                        .await
+                    })
+                    .await?;
+            } else {
+                progress.skip("Boot provisioning skipped");
+            }
+        }
+
+        // 8. Ready — start log subscription + port forwards
         let log_handle = agent_client
             .as_ref()
             .map(crate::agent::start_log_subscription);
 
-        // 7b3. Run provisioning scripts via agent
-        if just_started
-            && let Some(ref agent) = agent_client
-        {
-            let scripts = build_provision_scripts(
-                config.provision.system.as_ref().map(|s| s.script.as_str()),
-                config.provision.boot.as_ref().map(|s| s.script.as_str()),
-                &resolved_fs,
-            );
-            if !scripts.is_empty() {
-                println!("Provisioning...");
-                crate::agent::run_provision(agent, scripts).await?;
-            }
-        }
-
-        // 7c. Start port forwards
         let forward_handles = if let Some(cid) = vsock_cid
             && !config.ports.is_empty()
         {
-            for pf in &config.ports {
-                println!(
-                    "Forwarding {}:{} → guest:{}",
-                    pf.bind_addr(),
-                    pf.host,
-                    pf.guest
-                );
-            }
             crate::agent::start_port_forwards(cid, &config.ports).await?
         } else {
             Vec::new()
         };
 
-        // 8. Start inotify bridge in the background (non-blocking)
-        // The bridge task waits for the VM IP internally via virsh subprocess,
-        // so we don't hold any libvirt handles and can drop conn immediately.
+        // Start inotify bridge in the background (non-blocking)
         let watch_handle = if mounts.iter().any(|m| m.inotify && !m.readonly) {
             Some(crate::watch::start_inotify_bridge(
                 &mounts,
@@ -285,10 +382,21 @@ impl super::Backend for LibvirtBackend {
             None
         };
 
+        progress.skip("Ready");
+
+        // Show port forward info lines
+        for pf in &config.ports {
+            progress.info(&format!(
+                "Forwarding {}:{} \u{2192} guest:{}",
+                pf.bind_addr(),
+                pf.host,
+                pf.guest,
+            ));
+        }
+
         drop(conn);
 
-        // 9. Wait for Ctrl+C (no console attach — keeps log output clean)
-        println!("VM is running. Press Ctrl+C to stop...");
+        progress.println("VM is running. Press Ctrl+C to stop...");
         tokio::signal::ctrl_c().await.ok();
 
         // Stop log subscription, port forwards and inotify bridge
@@ -696,45 +804,6 @@ async fn collect_ssh_keys(
     Ok(keys)
 }
 
-/// Build the ordered list of provisioning scripts to push to the agent.
-///
-/// Order: drives (0, System) → system (1, System) → boot (2, Boot).
-fn build_provision_scripts(
-    system_script: Option<&str>,
-    boot_script: Option<&str>,
-    fs: &[ResolvedFs],
-) -> Vec<rum_agent::ProvisionScript> {
-    let mut scripts = Vec::new();
-
-    if !fs.is_empty() {
-        scripts.push(rum_agent::ProvisionScript {
-            name: "rum-drives".into(),
-            content: cloudinit::build_drive_script(fs),
-            order: 0,
-            run_on: rum_agent::RunOn::System,
-        });
-    }
-
-    if let Some(script) = system_script {
-        scripts.push(rum_agent::ProvisionScript {
-            name: "rum-system".into(),
-            content: script.into(),
-            order: 1,
-            run_on: rum_agent::RunOn::System,
-        });
-    }
-
-    if let Some(script) = boot_script {
-        scripts.push(rum_agent::ProvisionScript {
-            name: "rum-boot".into(),
-            content: script.into(),
-            order: 2,
-            run_on: rum_agent::RunOn::Boot,
-        });
-    }
-
-    scripts
-}
 
 fn connect(sys_config: &SystemConfig) -> Result<ConnGuard, RumError> {
     // Suppress libvirt's default error handler that prints to stderr.

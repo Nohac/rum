@@ -12,6 +12,10 @@ pub struct Cli {
     #[arg(short, long)]
     pub verbose: bool,
 
+    /// Suppress log lines, show only step completion
+    #[arg(short, long)]
+    pub quiet: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }

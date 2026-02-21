@@ -113,10 +113,12 @@ pub(crate) fn start_log_subscription(agent: &AgentClient) -> JoinHandle<()> {
 
 /// Run provisioning scripts on the guest via the agent RPC.
 ///
-/// Streams log output from the agent and returns an error if any script fails.
+/// Streams log output from the agent via the `on_log` callback and returns
+/// an error if any script fails.
 pub(crate) async fn run_provision(
     agent: &AgentClient,
     scripts: Vec<rum_agent::ProvisionScript>,
+    mut on_log: impl FnMut(&str),
 ) -> Result<(), RumError> {
     let (tx, mut rx) = roam::channel::<LogEvent>();
     let agent = agent.clone();
@@ -124,10 +126,7 @@ pub(crate) async fn run_provision(
     let provision_handle = tokio::spawn(async move { agent.provision(scripts, tx).await });
 
     while let Ok(Some(event)) = rx.recv().await {
-        match event.stream {
-            LogStream::Stderr => eprintln!("{}", event.message),
-            _ => println!("{}", event.message),
-        }
+        on_log(&event.message);
     }
 
     let result = provision_handle

@@ -1,19 +1,35 @@
+use std::io::IsTerminal;
+
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use rum::backend::{self, Backend};
 use rum::cli::{Cli, Command};
 use rum::config;
+use rum::progress::OutputMode;
 
 #[tokio::main]
 async fn main() -> miette::Result<()> {
     let cli = Cli::parse();
 
-    let filter = if cli.verbose {
-        EnvFilter::new("debug")
+    let mode = if cli.quiet {
+        OutputMode::Quiet
+    } else if cli.verbose {
+        OutputMode::Verbose
+    } else if !std::io::stdout().is_terminal() {
+        OutputMode::Plain
     } else {
-        EnvFilter::from_default_env()
-            .add_directive("rum=info".parse().expect("valid log directive"))
+        OutputMode::Normal
+    };
+
+    // Suppress tracing when the progress UI manages the terminal (Normal/Quiet).
+    // Tracing output to stderr corrupts indicatif's terminal line tracking,
+    // causing redraws to clear completed steps.
+    let filter = match mode {
+        OutputMode::Verbose => EnvFilter::new("debug"),
+        OutputMode::Normal | OutputMode::Quiet => EnvFilter::new("off"),
+        OutputMode::Plain => EnvFilter::from_default_env()
+            .add_directive("rum=info".parse().expect("valid log directive")),
     };
 
     tracing_subscriber::fmt().with_env_filter(filter).init();
@@ -28,7 +44,7 @@ async fn main() -> miette::Result<()> {
 
     match cli.command {
         Command::Init { .. } => unreachable!(),
-        Command::Up { reset } => backend.up(&sys_config, reset).await?,
+        Command::Up { reset } => backend.up(&sys_config, reset, mode).await?,
         Command::Down => backend.down(&sys_config).await?,
         Command::Destroy { purge } => backend.destroy(&sys_config, purge).await?,
         Command::Status => backend.status(&sys_config).await?,
