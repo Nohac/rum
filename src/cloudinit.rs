@@ -24,6 +24,7 @@ pub fn seed_hash(config: &SeedConfig) -> String {
         m.tag.hash(&mut hasher);
         m.target.hash(&mut hasher);
         m.readonly.hash(&mut hasher);
+        m.default.hash(&mut hasher);
     }
     config.autologin.hash(&mut hasher);
     for k in config.ssh_keys {
@@ -135,6 +136,14 @@ fn build_user_data(config: &SeedConfig) -> String {
         write_files.push(value!({
             "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
             "content": (AUTOLOGIN_DROPIN),
+        }));
+    }
+
+    // If a mount is marked as default workdir, write a profile.d script to cd into it
+    if let Some(default_mount) = mounts.iter().find(|m| m.default) {
+        write_files.push(value!({
+            "path": "/etc/profile.d/rum-workdir.sh",
+            "content": (format!("cd {}\n", default_mount.target).as_str()),
         }));
     }
 
@@ -421,6 +430,7 @@ mod tests {
             readonly: false,
             tag: "mnt_project".into(),
             inotify: false,
+            default: false,
         }];
         let config = SeedConfig { mounts: &mounts, ..default_seed_config() };
         let ud = build_user_data(&config);
@@ -540,5 +550,21 @@ mod tests {
         let config = default_seed_config();
         let ud = build_user_data(&config);
         assert!(!ud.contains("ssh_authorized_keys"));
+    }
+
+    #[test]
+    fn user_data_workdir_profile_script() {
+        let mounts = vec![ResolvedMount {
+            source: std::path::PathBuf::from("/home/user/project"),
+            target: "/mnt/project".into(),
+            readonly: false,
+            tag: "mnt_project".into(),
+            inotify: false,
+            default: true,
+        }];
+        let config = SeedConfig { mounts: &mounts, ..default_seed_config() };
+        let ud = build_user_data(&config);
+        assert!(ud.contains("rum-workdir.sh"));
+        assert!(ud.contains("cd /mnt/project"));
     }
 }

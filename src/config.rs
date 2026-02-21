@@ -17,6 +17,8 @@ pub struct MountConfig {
     pub tag: String,
     #[facet(default)]
     pub inotify: bool,
+    #[facet(default)]
+    pub default: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -26,6 +28,7 @@ pub struct ResolvedMount {
     pub readonly: bool,
     pub tag: String,
     pub inotify: bool,
+    pub default: bool,
 }
 
 #[derive(Debug, Clone, Default, Facet)]
@@ -304,6 +307,13 @@ impl SystemConfig {
             source: e,
         })?;
 
+        let default_count = self.config.mounts.iter().filter(|m| m.default).count();
+        if default_count > 1 {
+            return Err(RumError::Validation {
+                message: "at most one mount may have default = true".into(),
+            });
+        }
+
         let mut resolved = Vec::new();
         let mut seen_tags = std::collections::HashSet::new();
 
@@ -359,6 +369,7 @@ impl SystemConfig {
                 readonly: m.readonly,
                 tag,
                 inotify: m.inotify,
+                default: m.default,
             });
         }
 

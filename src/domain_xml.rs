@@ -548,6 +548,7 @@ memory_mb = 512
                 readonly: false,
                 tag: "mnt_project".into(),
                 inotify: false,
+                default: false,
             },
             ResolvedMount {
                 source: PathBuf::from("/data"),
@@ -555,6 +556,7 @@ memory_mb = 512
                 readonly: true,
                 tag: "mnt_data".into(),
                 inotify: false,
+                default: false,
             },
         ];
         let xml = make_xml(&test_system_config(), &mounts, &[]);
