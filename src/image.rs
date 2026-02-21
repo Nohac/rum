@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use futures_util::StreamExt;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use tokio::io::AsyncWriteExt;
 
 use crate::error::RumError;
@@ -51,13 +51,9 @@ pub fn is_cached(base: &str, cache_dir: &Path) -> bool {
 
 /// Ensure the base image is available locally, downloading if needed.
 /// Returns the path to the cached image file.
-///
-/// When `multi` is provided, the download progress bar is added as a child
-/// of that `MultiProgress` so it renders inline with step output.
 pub async fn ensure_base_image(
     base: &str,
     cache_dir: &Path,
-    multi: Option<&MultiProgress>,
 ) -> Result<PathBuf, RumError> {
     if !base.starts_with("http://") && !base.starts_with("https://") {
         let path = PathBuf::from(base);
@@ -103,11 +99,7 @@ pub async fn ensure_base_image(
 
     let total_size = response.content_length().unwrap_or(0);
 
-    let pb = if let Some(mp) = multi {
-        mp.add(ProgressBar::new(total_size))
-    } else {
-        ProgressBar::new(total_size)
-    };
+    let pb = ProgressBar::new(total_size);
     pb.set_style(
         ProgressStyle::default_bar()
             .template("{spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
@@ -133,7 +125,7 @@ pub async fn ensure_base_image(
             source: e,
         })?;
 
-    pb.finish_with_message("download complete");
+    pb.finish_and_clear();
     tracing::info!(path = %dest.display(), "base image cached");
 
     Ok(dest)

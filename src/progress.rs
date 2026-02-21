@@ -1,7 +1,8 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
+use console::{style, truncate_str, Term};
 
 /// Controls how step output is rendered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,63 +17,88 @@ pub enum OutputMode {
     Plain,
 }
 
+const MAX_LOG_LINES: usize = 10;
+const SPINNER_CHARS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
 /// Orchestrates numbered build steps with spinners and checkmarks.
 pub struct StepProgress {
-    multi: MultiProgress,
+    term: Term,
     total_steps: usize,
     current_step: usize,
     mode: OutputMode,
 }
 
-/// Shared state between `Step` and `StepProgress::run()`.
-///
-/// The closure may drop `Step` before the future completes (when the async
-/// block doesn't capture it). `run()` keeps its own `Arc` clone so it can
-/// finalize the bar and clean up log lines regardless.
+/// Shared state for the active area (spinner line + log lines).
 struct StepState {
     log_lines: VecDeque<String>,
     done_label: Option<String>,
+    /// Number of logical lines currently in the active area.
+    drawn_lines: usize,
+    label: String,
+    prefix: String,
+    spinner_frame: usize,
 }
 
 /// Handle passed into the step closure for logging during execution.
 ///
 /// Methods take `&self` — interior mutation goes through the shared `StepState`.
-///
-/// Log lines are encoded as extra lines in the spinner bar's message
-/// (multi-line `ProgressBar`). This avoids adding/removing separate bars
-/// from the `MultiProgress`, which can cause indicatif to miscount terminal
-/// lines and clear too much on redraw.
 pub struct Step {
-    bar: ProgressBar,
-    multi: MultiProgress,
     state: Arc<Mutex<StepState>>,
-    label: String,
     mode: OutputMode,
 }
 
-fn spinner_style() -> ProgressStyle {
-    ProgressStyle::default_spinner()
-        .template("[{prefix}] {spinner:.cyan} {msg}")
-        .unwrap()
-}
+impl StepState {
+    /// Redraw the entire active area (spinner line + log lines).
+    ///
+    /// Caller must hold the mutex. All terminal writes happen while locked
+    /// so cursor movements are atomic with respect to the spinner tick task.
+    fn redraw(&mut self, term: &Term, mode: OutputMode) {
+        let width = (term.size().1 as usize).max(1);
 
-fn done_style() -> ProgressStyle {
-    ProgressStyle::default_spinner()
-        .template("[{prefix}] \u{2713} {msg:.green}")
-        .unwrap()
-}
+        // Move to top of active area
+        if self.drawn_lines > 0 {
+            term.move_cursor_up(self.drawn_lines).ok();
+        }
 
-const MAX_LOG_LINES: usize = 10;
+        // Spinner line — truncate to terminal width to prevent wrapping
+        let ch = SPINNER_CHARS[self.spinner_frame % SPINNER_CHARS.len()];
+        let spinner_line = format!(
+            "[{}] {} {}",
+            self.prefix,
+            style(ch).cyan(),
+            self.label
+        );
+        term.clear_line().ok();
+        term.write_line(&truncate_str(&spinner_line, width, "\u{2026}"))
+            .ok();
+
+        // Log lines (skip in Quiet mode)
+        let log_count = if mode != OutputMode::Quiet {
+            for line in &self.log_lines {
+                let log_line = format!("        {line}");
+                term.clear_line().ok();
+                term.write_line(&truncate_str(&log_line, width, "\u{2026}"))
+                    .ok();
+            }
+            self.log_lines.len()
+        } else {
+            0
+        };
+
+        let new_drawn = 1 + log_count;
+
+        // Clear any leftover rows below (from previous draws with more
+        // log lines, or from wrapped lines after a terminal resize)
+        term.clear_to_end_of_screen().ok();
+
+        self.drawn_lines = new_drawn;
+    }
+}
 
 impl StepProgress {
     pub fn new(total_steps: usize, mode: OutputMode) -> Self {
-        let multi = if mode == OutputMode::Plain {
-            MultiProgress::with_draw_target(ProgressDrawTarget::hidden())
-        } else {
-            MultiProgress::new()
-        };
         Self {
-            multi,
+            term: Term::stderr(),
             total_steps,
             current_step: 0,
             mode,
@@ -83,9 +109,6 @@ impl StepProgress {
     ///
     /// Shows a spinner while running, checkmark on completion.
     /// The closure receives a [`Step`] handle for logging.
-    /// Finalization (checkmark, log cleanup) happens here — **not** in
-    /// `Step::drop` — so steps that don't capture the handle in their
-    /// async block still get the correct spinner→checkmark transition.
     pub async fn run<F, Fut, T>(&mut self, label: &str, f: F) -> T
     where
         F: FnOnce(Step) -> Fut,
@@ -98,54 +121,103 @@ impl StepProgress {
             println!("[{prefix}] {label}");
         }
 
-        let bar = self.multi.add(ProgressBar::new_spinner());
-        bar.set_style(spinner_style());
-        bar.set_prefix(prefix.clone());
-        bar.set_message(label.to_string());
-        bar.enable_steady_tick(std::time::Duration::from_millis(80));
-
         let state = Arc::new(Mutex::new(StepState {
             log_lines: VecDeque::new(),
             done_label: None,
+            drawn_lines: 0,
+            label: label.to_string(),
+            prefix: prefix.clone(),
+            spinner_frame: 0,
         }));
 
+        // Draw initial spinner line for non-plain modes
+        if self.mode != OutputMode::Plain {
+            self.term.hide_cursor().ok();
+            let mut st = state.lock().unwrap();
+            st.redraw(&self.term, self.mode);
+        }
+
+        // Start spinner tick task — redraws on timer and on terminal resize
+        let tick_handle = if self.mode != OutputMode::Plain {
+            let state_clone = state.clone();
+            let mode = self.mode;
+            Some(tokio::spawn(async move {
+                let term = Term::stderr();
+                let mut interval = tokio::time::interval(Duration::from_millis(80));
+                let mut sigwinch = tokio::signal::unix::signal(
+                    tokio::signal::unix::SignalKind::window_change(),
+                )
+                .expect("failed to register SIGWINCH handler");
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            let mut st = state_clone.lock().unwrap();
+                            st.spinner_frame += 1;
+                            st.redraw(&term, mode);
+                        }
+                        _ = sigwinch.recv() => {
+                            // Immediate redraw at new terminal width
+                            let mut st = state_clone.lock().unwrap();
+                            st.redraw(&term, mode);
+                        }
+                    }
+                }
+            }))
+        } else {
+            None
+        };
+
         let step = Step {
-            bar: bar.clone(),
-            multi: self.multi.clone(),
             state: state.clone(),
-            label: label.to_string(),
             mode: self.mode,
         };
 
         let result = f(step).await;
 
-        // Finalize — Step may already have been dropped, but we still own
-        // the bar and state through our Arc clone.
-        let st = state.lock().unwrap();
-
-        // In Verbose mode, flush log lines above the managed area so they
-        // persist after the bar shrinks back to a single line.
-        if self.mode == OutputMode::Verbose {
-            for line in &st.log_lines {
-                self.multi.println(format!("        {line}")).ok();
-            }
+        // Stop spinner tick
+        if let Some(handle) = tick_handle {
+            handle.abort();
         }
 
+        let st = state.lock().unwrap();
         let done_label = st
             .done_label
             .clone()
             .unwrap_or_else(|| label.to_string());
+        let log_lines: Vec<String> = st.log_lines.iter().cloned().collect();
+        let drawn_lines = st.drawn_lines;
         drop(st);
+
+        if self.mode != OutputMode::Plain {
+            // Clear the active area
+            if drawn_lines > 0 {
+                self.term.move_cursor_up(drawn_lines).ok();
+            }
+            self.term.clear_to_end_of_screen().ok();
+
+            // In Verbose mode, flush log lines as permanent output
+            if self.mode == OutputMode::Verbose {
+                for line in &log_lines {
+                    self.term
+                        .write_line(&format!("        {line}"))
+                        .ok();
+                }
+            }
+
+            // Print completed step — permanent, immune to resize
+            self.term
+                .write_line(&format!(
+                    "[{prefix}] \u{2713} {}",
+                    style(&done_label).green()
+                ))
+                .ok();
+
+            self.term.show_cursor().ok();
+        }
 
         if self.mode == OutputMode::Plain {
             println!("[{prefix}] \u{2713} {done_label}");
         }
-
-        // Setting the message to just the done_label collapses the bar from
-        // N+1 lines (label + log lines) back to 1 line. indicatif handles
-        // the terminal line delta internally — no multi.remove() needed.
-        bar.set_style(done_style());
-        bar.finish_with_message(done_label);
 
         result
     }
@@ -157,14 +229,14 @@ impl StepProgress {
 
         if self.mode == OutputMode::Plain {
             println!("[{prefix}] \u{2713} {label}");
-            return;
+        } else {
+            self.term
+                .write_line(&format!(
+                    "[{prefix}] \u{2713} {}",
+                    style(label).green()
+                ))
+                .ok();
         }
-
-        let bar = self.multi.add(ProgressBar::new_spinner());
-        bar.set_style(done_style());
-        bar.set_prefix(prefix);
-        bar.set_message(label.to_string());
-        bar.finish();
     }
 
     /// Print an info line (port forwards, etc.).
@@ -172,29 +244,32 @@ impl StepProgress {
         if self.mode == OutputMode::Plain {
             println!("      \u{2192} {text}");
         } else {
-            self.multi
-                .println(format!("      \u{2192} {text}"))
+            self.term
+                .write_line(&format!("      \u{2192} {text}"))
                 .ok();
         }
     }
 
-    /// Print a plain line via multi.println (final messages).
+    /// Print a plain line (final messages).
     pub fn println(&self, text: &str) {
         if self.mode == OutputMode::Plain {
             println!("{text}");
         } else {
-            self.multi.println(text).ok();
+            self.term.write_line(text).ok();
+        }
+    }
+}
+
+impl Drop for StepProgress {
+    fn drop(&mut self) {
+        if self.mode != OutputMode::Plain {
+            self.term.show_cursor().ok();
         }
     }
 }
 
 impl Step {
     /// Add a log line under this step (ring buffer of ~10).
-    ///
-    /// The line is appended to the spinner bar's message as an extra line,
-    /// keeping the label as the first line. Old lines are evicted when the
-    /// buffer is full. On step completion, `run()` sets the message back to
-    /// just the done label, collapsing all log lines.
     pub fn log(&self, line: &str) {
         if self.mode == OutputMode::Quiet {
             return;
@@ -207,35 +282,21 @@ impl Step {
             return;
         }
 
-        let mut state = self.state.lock().unwrap();
+        let term = Term::stderr();
+        let mut st = self.state.lock().unwrap();
 
-        // Split on newlines so each visual line is one ring-buffer entry.
-        // This keeps the line count accurate for indicatif's terminal tracking.
         for sub in line.split('\n') {
-            if state.log_lines.len() >= MAX_LOG_LINES {
-                state.log_lines.pop_front();
+            if st.log_lines.len() >= MAX_LOG_LINES {
+                st.log_lines.pop_front();
             }
-            state.log_lines.push_back(sub.to_string());
+            st.log_lines.push_back(sub.to_string());
         }
 
-        // Rebuild the bar's message: label on the first line, then indented
-        // log lines. indicatif tracks the line count per bar and handles the
-        // terminal delta when the count changes.
-        let mut msg = self.label.clone();
-        for log_line in &state.log_lines {
-            msg.push_str("\n        ");
-            msg.push_str(log_line);
-        }
-        self.bar.set_message(msg);
+        st.redraw(&term, self.mode);
     }
 
     /// Override the completion label shown with the checkmark.
     pub fn set_done_label(&self, label: impl Into<String>) {
         self.state.lock().unwrap().done_label = Some(label.into());
-    }
-
-    /// Access MultiProgress for adding child bars (e.g., download progress).
-    pub fn multi(&self) -> &MultiProgress {
-        &self.multi
     }
 }
