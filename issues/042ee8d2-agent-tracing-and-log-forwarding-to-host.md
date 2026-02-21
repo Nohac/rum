@@ -1,6 +1,6 @@
 # Agent tracing and log forwarding to host
 
-**ID:** 042ee8d2 | **Status:** Open | **Created:** 2026-02-20T22:51:40+01:00
+**ID:** 042ee8d2 | **Status:** Done | **Created:** 2026-02-20T22:51:40+01:00
 
 ## Summary
 

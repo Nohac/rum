@@ -57,7 +57,7 @@ When a step completes, its log lines collapse to a single checkmark line. The ac
 
 **Phase 2: Agent log stream (post-agent)**
 - Once `wait_for_agent()` succeeds, switch from TTY to the structured agent log stream (issue `042ee8d2`)
-- Agent-driven script execution sends stdout/stderr as log events
+- Provisioning scripts run via rum-agent (issue `2dcdb5b3`), streaming stdout/stderr as log events
 - Display under "Running system provisioning" / "Running boot script" steps
 
 ### Terminal rendering
@@ -91,6 +91,7 @@ Steps 6-7 only appear if provisioning scripts are configured.
 ## Dependencies
 
 - Depends on: agent tracing/log forwarding (`042ee8d2`) for phase 2
+- Depends on: provisioning via rum-agent (`2dcdb5b3`) for script output streaming
 - Phase 1 (TTY forwarding) can be implemented independently
 - Blocks: better experience for integration test lib (`6215eef7`)
 

@@ -111,6 +111,45 @@ pub(crate) fn start_log_subscription(agent: &AgentClient) -> JoinHandle<()> {
     })
 }
 
+/// Run provisioning scripts on the guest via the agent RPC.
+///
+/// Streams log output from the agent and returns an error if any script fails.
+pub(crate) async fn run_provision(
+    agent: &AgentClient,
+    scripts: Vec<rum_agent::ProvisionScript>,
+) -> Result<(), RumError> {
+    let (tx, mut rx) = roam::channel::<LogEvent>();
+    let agent = agent.clone();
+
+    let provision_handle = tokio::spawn(async move { agent.provision(scripts, tx).await });
+
+    while let Ok(Some(event)) = rx.recv().await {
+        match event.stream {
+            LogStream::Stderr => eprintln!("{}", event.message),
+            _ => println!("{}", event.message),
+        }
+    }
+
+    let result = provision_handle
+        .await
+        .map_err(|e| RumError::Io {
+            context: format!("provision task panicked: {e}"),
+            source: std::io::Error::other(e.to_string()),
+        })?
+        .map_err(|e| RumError::Io {
+            context: format!("provision RPC failed: {e}"),
+            source: std::io::Error::other(e.to_string()),
+        })?;
+
+    if !result.success {
+        return Err(RumError::ProvisionFailed {
+            script: result.failed_script,
+        });
+    }
+
+    Ok(())
+}
+
 /// Start TCP listeners on the host that forward connections to the guest via vsock.
 ///
 /// Each `PortForward` binds a TCP listener on `bind:host_port`. When a connection

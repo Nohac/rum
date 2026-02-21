@@ -1,6 +1,6 @@
 # Port forwarding support
 
-**ID:** f0939dea | **Status:** Open | **Created:** 2026-02-15T14:31:21+01:00
+**ID:** f0939dea | **Status:** Done | **Created:** 2026-02-15T14:31:21+01:00
 
 Forward host ports to guest ports so services running in the VM are accessible from the host via `localhost:<port>`.
 
@@ -40,12 +40,12 @@ guest = 5432
 
 ### Implementation tasks
 
-- [ ] Add `<vsock>` device to domain XML generation
-- [ ] Build a minimal guest agent binary that accepts vsock connections and proxies to local TCP ports
-- [ ] Ship guest agent via cloud-init (download or embed in seed ISO)
-- [ ] Host-side proxy: rum listens on configured host ports and forwards over vsock
-- [ ] Guest agent protocol: multiplexed connections with target port info
-- [ ] Discover CID from libvirt domain XML after define
+- [x] Add `<vsock>` device to domain XML generation
+- [x] Build a minimal guest agent binary that accepts vsock connections and proxies to local TCP ports
+- [x] Ship guest agent via cloud-init (download or embed in seed ISO)
+- [x] Host-side proxy: rum listens on configured host ports and forwards over vsock
+- [x] Guest agent protocol: multiplexed connections with target port info
+- [x] Discover CID from libvirt domain XML after define
 
 ### Trade-offs
 

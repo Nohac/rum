@@ -13,11 +13,16 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 use roam_stream::{HandshakeConfig, accept};
 use rum_agent::{
-    ExecResult, LogEvent, LogLevel, LogStream, RumAgent, RumAgentDispatcher,
+    ExecResult, LogEvent, LogLevel, LogStream, ProvisionResult, ProvisionScript, RunOn, RumAgent,
+    RumAgentDispatcher,
 };
+
+use std::path::Path;
 
 const RPC_PORT: u32 = 2222;
 const FORWARD_PORT: u32 = 2223;
+const SCRIPTS_DIR: &str = "/var/lib/rum/scripts";
+const SENTINEL_PATH: &str = "/var/lib/rum/.system-provisioned";
 
 #[derive(Clone)]
 struct RumAgentImpl {
@@ -61,75 +66,170 @@ impl RumAgent for RumAgentImpl {
         output: Tx<LogEvent>,
     ) -> ExecResult {
         tracing::info!(command, "exec");
+        run_script(&command, "exec", &output).await
+    }
 
-        let child = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(&command)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
+    async fn provision(
+        &self,
+        _cx: &roam::Context,
+        scripts: Vec<ProvisionScript>,
+        output: Tx<LogEvent>,
+    ) -> ProvisionResult {
+        tracing::info!(count = scripts.len(), "provision");
 
-        let mut child = match child {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = output
-                    .send(&LogEvent {
-                        timestamp_us: now_us(),
-                        level: LogLevel::Error,
-                        target: "exec".into(),
-                        message: format!("failed to spawn: {e}"),
-                        stream: LogStream::Stderr,
-                    })
-                    .await;
-                return ExecResult { exit_code: None };
+        // Create scripts dir, clear old scripts
+        let scripts_dir = Path::new(SCRIPTS_DIR);
+        if let Err(e) = tokio::fs::create_dir_all(scripts_dir).await {
+            tracing::error!(error = %e, "failed to create scripts dir");
+            return ProvisionResult {
+                success: false,
+                failed_script: "(setup)".into(),
+            };
+        }
+        if let Ok(mut entries) = tokio::fs::read_dir(scripts_dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let _ = tokio::fs::remove_file(entry.path()).await;
             }
+        }
+
+        // Write all scripts to disk
+        for s in &scripts {
+            let suffix = match s.run_on {
+                RunOn::System => "system",
+                RunOn::Boot => "boot",
+            };
+            let filename = format!("{:03}-{}.{suffix}.sh", s.order, s.name);
+            let path = scripts_dir.join(&filename);
+            if let Err(e) = tokio::fs::write(&path, &s.content).await {
+                tracing::error!(error = %e, filename, "failed to write script");
+                return ProvisionResult {
+                    success: false,
+                    failed_script: s.name.clone(),
+                };
+            }
+        }
+
+        // Determine which scripts to run
+        let is_first_boot = !Path::new(SENTINEL_PATH).exists();
+        let mut to_run: Vec<&ProvisionScript> = if is_first_boot {
+            tracing::info!("first boot — running all scripts");
+            scripts.iter().collect()
+        } else {
+            tracing::info!("subsequent boot — running boot scripts only");
+            scripts
+                .iter()
+                .filter(|s| matches!(s.run_on, RunOn::Boot))
+                .collect()
         };
+        to_run.sort_by_key(|s| s.order);
 
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
+        // Execute each script
+        for s in &to_run {
+            let _ = output
+                .send(&LogEvent {
+                    timestamp_us: now_us(),
+                    level: LogLevel::Info,
+                    target: "provision".into(),
+                    message: format!("running script: {}", s.name),
+                    stream: LogStream::Log,
+                })
+                .await;
 
-        let mut stdout_lines = BufReader::new(stdout).lines();
-        let mut stderr_lines = BufReader::new(stderr).lines();
-
-        loop {
-            tokio::select! {
-                line = stdout_lines.next_line() => {
-                    match line {
-                        Ok(Some(text)) => {
-                            let _ = output.send(&LogEvent {
-                                timestamp_us: now_us(),
-                                level: LogLevel::Info,
-                                target: "exec".into(),
-                                message: text,
-                                stream: LogStream::Stdout,
-                            }).await;
-                        }
-                        Ok(None) => break,
-                        Err(_) => break,
-                    }
-                }
-                line = stderr_lines.next_line() => {
-                    match line {
-                        Ok(Some(text)) => {
-                            let _ = output.send(&LogEvent {
-                                timestamp_us: now_us(),
-                                level: LogLevel::Warn,
-                                target: "exec".into(),
-                                message: text,
-                                stream: LogStream::Stderr,
-                            }).await;
-                        }
-                        Ok(None) => break,
-                        Err(_) => break,
-                    }
-                }
+            let result = run_script(&s.content, &s.name, &output).await;
+            if result.exit_code != Some(0) {
+                tracing::error!(script = %s.name, exit_code = ?result.exit_code, "script failed");
+                return ProvisionResult {
+                    success: false,
+                    failed_script: s.name.clone(),
+                };
             }
         }
 
-        let status = child.wait().await.ok();
-        ExecResult {
-            exit_code: status.and_then(|s| s.code()),
+        // On first-boot success: create sentinel
+        if is_first_boot {
+            if let Some(parent) = Path::new(SENTINEL_PATH).parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            if let Err(e) = tokio::fs::write(SENTINEL_PATH, "").await {
+                tracing::error!(error = %e, "failed to create sentinel");
+            }
         }
+
+        ProvisionResult {
+            success: true,
+            failed_script: String::new(),
+        }
+    }
+}
+
+async fn run_script(content: &str, name: &str, output: &Tx<LogEvent>) -> ExecResult {
+    let child = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(content)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = output
+                .send(&LogEvent {
+                    timestamp_us: now_us(),
+                    level: LogLevel::Error,
+                    target: name.into(),
+                    message: format!("failed to spawn: {e}"),
+                    stream: LogStream::Stderr,
+                })
+                .await;
+            return ExecResult { exit_code: None };
+        }
+    };
+
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+
+    let mut stdout_lines = BufReader::new(stdout).lines();
+    let mut stderr_lines = BufReader::new(stderr).lines();
+
+    loop {
+        tokio::select! {
+            line = stdout_lines.next_line() => {
+                match line {
+                    Ok(Some(text)) => {
+                        let _ = output.send(&LogEvent {
+                            timestamp_us: now_us(),
+                            level: LogLevel::Info,
+                            target: name.into(),
+                            message: text,
+                            stream: LogStream::Stdout,
+                        }).await;
+                    }
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+            line = stderr_lines.next_line() => {
+                match line {
+                    Ok(Some(text)) => {
+                        let _ = output.send(&LogEvent {
+                            timestamp_us: now_us(),
+                            level: LogLevel::Warn,
+                            target: name.into(),
+                            message: text,
+                            stream: LogStream::Stderr,
+                        }).await;
+                    }
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+
+    let status = child.wait().await.ok();
+    ExecResult {
+        exit_code: status.and_then(|s| s.code()),
     }
 }
 
@@ -159,6 +259,65 @@ async fn handle_forward(mut vsock: tokio_vsock::VsockStream) {
     }
 }
 
+async fn run_cached_boot_scripts() {
+    let scripts_dir = Path::new(SCRIPTS_DIR);
+    let mut entries = match tokio::fs::read_dir(scripts_dir).await {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to read scripts dir");
+            return;
+        }
+    };
+
+    let mut boot_scripts = Vec::new();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.ends_with(".boot.sh") {
+            boot_scripts.push(entry.path());
+        }
+    }
+    boot_scripts.sort();
+
+    if boot_scripts.is_empty() {
+        return;
+    }
+
+    tracing::info!(count = boot_scripts.len(), "running cached boot scripts");
+    for path in &boot_scripts {
+        let filename = path.file_name().unwrap_or_default().to_string_lossy();
+        tracing::info!(script = %filename, "executing boot script");
+
+        let content = match tokio::fs::read_to_string(path).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(script = %filename, error = %e, "failed to read script");
+                break;
+            }
+        };
+
+        let status = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&content)
+            .status()
+            .await;
+
+        match status {
+            Ok(s) if s.success() => {
+                tracing::info!(script = %filename, "boot script completed");
+            }
+            Ok(s) => {
+                tracing::error!(script = %filename, exit_code = ?s.code(), "boot script failed");
+                break;
+            }
+            Err(e) => {
+                tracing::error!(script = %filename, error = %e, "failed to spawn boot script");
+                break;
+            }
+        }
+    }
+}
+
 fn now_us() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -177,6 +336,11 @@ async fn main() {
 
     let version = env!("CARGO_PKG_VERSION");
     tracing::info!(version, "rum-agent starting");
+
+    // Run cached boot scripts on reboot (sentinel exists = not first boot)
+    if Path::new(SENTINEL_PATH).exists() && Path::new(SCRIPTS_DIR).exists() {
+        run_cached_boot_scripts().await;
+    }
 
     let rpc_listener = VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, RPC_PORT))
         .expect("failed to bind vsock RPC listener");

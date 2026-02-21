@@ -5,7 +5,7 @@ use virt::domain::Domain;
 use virt::error as virt_error;
 use virt::network::Network;
 
-use crate::config::SystemConfig;
+use crate::config::{ResolvedFs, SystemConfig};
 use crate::error::RumError;
 use crate::{cloudinit, domain_xml, image, network_xml, overlay, paths, qcow2};
 
@@ -75,11 +75,7 @@ impl super::Backend for LibvirtBackend {
 
         let seed_hash = cloudinit::seed_hash(
             sys_config.hostname(),
-            config.provision.system.as_ref().map(|s| s.script.as_str()),
-            config.provision.boot.as_ref().map(|s| s.script.as_str()),
             &mounts,
-            &drives,
-            &resolved_fs,
             config.advanced.autologin,
             &ssh_keys,
             Some(agent_binary),
@@ -136,10 +132,7 @@ impl super::Backend for LibvirtBackend {
             cloudinit::generate_seed_iso(
                 &seed_path,
                 sys_config.hostname(),
-                config.provision.system.as_ref().map(|s| s.script.as_str()),
-                config.provision.boot.as_ref().map(|s| s.script.as_str()),
                 &mounts,
-                &resolved_fs,
                 config.advanced.autologin,
                 &ssh_keys,
                 Some(agent_binary),
@@ -218,7 +211,8 @@ impl super::Backend for LibvirtBackend {
             hint: "domain should have been defined above".into(),
         })?;
 
-        if !is_running(&dom) {
+        let just_started = !is_running(&dom);
+        if just_started {
             println!("Starting VM...");
             dom.create().map_err(|e| RumError::Libvirt {
                 message: format!("failed to start domain: {e}"),
@@ -243,6 +237,21 @@ impl super::Backend for LibvirtBackend {
         let log_handle = agent_client
             .as_ref()
             .map(crate::agent::start_log_subscription);
+
+        // 7b3. Run provisioning scripts via agent
+        if just_started
+            && let Some(ref agent) = agent_client
+        {
+            let scripts = build_provision_scripts(
+                config.provision.system.as_ref().map(|s| s.script.as_str()),
+                config.provision.boot.as_ref().map(|s| s.script.as_str()),
+                &resolved_fs,
+            );
+            if !scripts.is_empty() {
+                println!("Provisioning...");
+                crate::agent::run_provision(agent, scripts).await?;
+            }
+        }
 
         // 7c. Start port forwards
         let forward_handles = if let Some(cid) = vsock_cid
@@ -685,6 +694,46 @@ async fn collect_ssh_keys(
     let mut keys = vec![auto_pub.trim().to_string()];
     keys.extend(extra_keys.iter().cloned());
     Ok(keys)
+}
+
+/// Build the ordered list of provisioning scripts to push to the agent.
+///
+/// Order: drives (0, System) → system (1, System) → boot (2, Boot).
+fn build_provision_scripts(
+    system_script: Option<&str>,
+    boot_script: Option<&str>,
+    fs: &[ResolvedFs],
+) -> Vec<rum_agent::ProvisionScript> {
+    let mut scripts = Vec::new();
+
+    if !fs.is_empty() {
+        scripts.push(rum_agent::ProvisionScript {
+            name: "rum-drives".into(),
+            content: cloudinit::build_drive_script(fs),
+            order: 0,
+            run_on: rum_agent::RunOn::System,
+        });
+    }
+
+    if let Some(script) = system_script {
+        scripts.push(rum_agent::ProvisionScript {
+            name: "rum-system".into(),
+            content: script.into(),
+            order: 1,
+            run_on: rum_agent::RunOn::System,
+        });
+    }
+
+    if let Some(script) = boot_script {
+        scripts.push(rum_agent::ProvisionScript {
+            name: "rum-boot".into(),
+            content: script.into(),
+            order: 2,
+            run_on: rum_agent::RunOn::Boot,
+        });
+    }
+
+    scripts
 }
 
 fn connect(sys_config: &SystemConfig) -> Result<ConnGuard, RumError> {

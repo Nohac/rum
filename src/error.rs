@@ -71,6 +71,10 @@ pub enum RumError {
     #[diagnostic(help("check that the VM booted and rum-agent started"))]
     AgentTimeout { message: String },
 
+    #[error("provisioning failed: script '{script}' exited with non-zero status")]
+    #[diagnostic(help("check the script output above for details"))]
+    ProvisionFailed { script: String },
+
     #[error("failed to write config: {path}")]
     ConfigWrite {
         path: String,
