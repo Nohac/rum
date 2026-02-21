@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -129,4 +130,174 @@ pub async fn ensure_base_image(
     tracing::info!(path = %dest.display(), "base image cached");
 
     Ok(dest)
+}
+
+/// List all cached images with filename, size, and modification time.
+pub fn list_cached(cache_dir: &Path) -> Result<(), RumError> {
+    if !cache_dir.exists() {
+        println!("No cached images.");
+        return Ok(());
+    }
+
+    let mut entries: Vec<_> = std::fs::read_dir(cache_dir)
+        .map_err(|e| RumError::Io {
+            context: format!("reading cache directory {}", cache_dir.display()),
+            source: e,
+        })?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .collect();
+
+    if entries.is_empty() {
+        println!("No cached images.");
+        return Ok(());
+    }
+
+    entries.sort_by_key(|e| e.file_name());
+
+    let mut total_size: u64 = 0;
+    for entry in &entries {
+        let meta = entry.metadata().map_err(|e| RumError::Io {
+            context: format!("reading metadata for {}", entry.path().display()),
+            source: e,
+        })?;
+        let size = meta.len();
+        total_size += size;
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map(|d| time_from_epoch(d.as_secs()))
+            .unwrap_or_else(|| "unknown".into());
+        println!(
+            "  {}  {}  {}",
+            entry.file_name().to_string_lossy(),
+            format_size(size),
+            modified
+        );
+    }
+    println!("\n{} image(s), {} total", entries.len(), format_size(total_size));
+
+    Ok(())
+}
+
+/// Delete a specific cached image by filename.
+pub fn delete_cached(cache_dir: &Path, name: &str) -> Result<(), RumError> {
+    let path = cache_dir.join(name);
+    if !path.exists() {
+        return Err(RumError::Io {
+            context: format!(
+                "cached image '{}' not found in {}",
+                name,
+                cache_dir.display()
+            ),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"),
+        });
+    }
+    let meta = std::fs::metadata(&path).map_err(|e| RumError::Io {
+        context: format!("reading metadata for {}", path.display()),
+        source: e,
+    })?;
+    std::fs::remove_file(&path).map_err(|e| RumError::Io {
+        context: format!("deleting {}", path.display()),
+        source: e,
+    })?;
+    println!("Deleted '{}' ({})", name, format_size(meta.len()));
+    Ok(())
+}
+
+/// Delete all cached images.
+pub fn clear_cache(cache_dir: &Path) -> Result<(), RumError> {
+    if !cache_dir.exists() {
+        println!("No cached images.");
+        return Ok(());
+    }
+
+    let entries: Vec<_> = std::fs::read_dir(cache_dir)
+        .map_err(|e| RumError::Io {
+            context: format!("reading cache directory {}", cache_dir.display()),
+            source: e,
+        })?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .collect();
+
+    if entries.is_empty() {
+        println!("No cached images.");
+        return Ok(());
+    }
+
+    let total_size: u64 = entries
+        .iter()
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum();
+
+    for entry in &entries {
+        std::fs::remove_file(entry.path()).map_err(|e| RumError::Io {
+            context: format!("deleting {}", entry.path().display()),
+            source: e,
+        })?;
+    }
+    println!(
+        "Deleted {} image(s) ({})",
+        entries.len(),
+        format_size(total_size)
+    );
+    Ok(())
+}
+
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+fn time_from_epoch(secs: u64) -> String {
+    // Simple date formatting without external deps
+    // Format: YYYY-MM-DD HH:MM
+    let days = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+
+    // Days since epoch to date (simplified Gregorian)
+    let mut y = 1970i64;
+    let mut remaining_days = days as i64;
+    loop {
+        let year_days = if is_leap(y) { 366 } else { 365 };
+        if remaining_days < year_days {
+            break;
+        }
+        remaining_days -= year_days;
+        y += 1;
+    }
+    let month_days: [i64; 12] = if is_leap(y) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    let mut m = 0;
+    for (i, &md) in month_days.iter().enumerate() {
+        if remaining_days < md {
+            m = i;
+            break;
+        }
+        remaining_days -= md;
+    }
+    let d = remaining_days + 1;
+    format!("{y:04}-{:02}-{d:02} {hours:02}:{minutes:02}", m + 1)
+}
+
+fn is_leap(y: i64) -> bool {
+    y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)
 }

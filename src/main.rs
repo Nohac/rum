@@ -4,7 +4,7 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use rum::backend::{self, Backend};
-use rum::cli::{Cli, Command};
+use rum::cli::{Cli, Command, ImageCommand};
 use rum::config;
 use rum::progress::OutputMode;
 
@@ -39,11 +39,23 @@ async fn main() -> miette::Result<()> {
         return rum::init::run(defaults).map_err(Into::into);
     }
 
+    // Handle image commands before loading config — they don't need a rum.toml
+    if let Command::Image { action } = cli.command {
+        let cache_dir = rum::paths::cache_dir();
+        return match action {
+            ImageCommand::List => rum::image::list_cached(&cache_dir).map_err(Into::into),
+            ImageCommand::Delete { name } => {
+                rum::image::delete_cached(&cache_dir, &name).map_err(Into::into)
+            }
+            ImageCommand::Clear => rum::image::clear_cache(&cache_dir).map_err(Into::into),
+        };
+    }
+
     let sys_config = config::load_config(&cli.config)?;
     let backend = backend::create_backend();
 
     match cli.command {
-        Command::Init { .. } => unreachable!(),
+        Command::Init { .. } | Command::Image { .. } => unreachable!(),
         Command::Up { reset } => backend.up(&sys_config, reset, mode).await?,
         Command::Down => backend.down(&sys_config).await?,
         Command::Destroy { purge } => backend.destroy(&sys_config, purge).await?,

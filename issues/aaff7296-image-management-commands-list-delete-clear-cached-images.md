@@ -1,6 +1,6 @@
 # Image management commands: list, delete, clear cached images
 
-**ID:** aaff7296 | **Status:** Open | **Created:** 2026-02-21T14:06:27+01:00
+**ID:** aaff7296 | **Status:** Done | **Created:** 2026-02-21T14:06:27+01:00
 
 Base images are cached under `~/.cache/rum/images/` but there's no way to manage them other than manually poking around in that directory.
 

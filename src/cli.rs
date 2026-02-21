@@ -64,4 +64,23 @@ pub enum Command {
         #[arg(long)]
         defaults: bool,
     },
+
+    /// Manage cached base images
+    Image {
+        #[command(subcommand)]
+        action: ImageCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ImageCommand {
+    /// List cached images with size and modification time
+    List,
+    /// Delete a specific cached image by filename
+    Delete {
+        /// Image filename to delete
+        name: String,
+    },
+    /// Delete all cached images
+    Clear,
 }
