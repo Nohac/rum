@@ -63,7 +63,7 @@ fn destroy_nonexistent_vm() {
         .args(["--config", config_path.to_str().unwrap(), "destroy"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("destroyed"));
+        .stdout(predicate::str::contains("nothing to destroy"));
 }
 
 #[test]

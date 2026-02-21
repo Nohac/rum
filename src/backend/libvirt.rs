@@ -348,10 +348,15 @@ impl super::Backend for LibvirtBackend {
             ));
         }
 
-        drop(conn);
-
         progress.println("VM is running. Press Ctrl+C to stop...");
-        tokio::signal::ctrl_c().await.ok();
+
+        // Wait for either Ctrl+C or the domain to be stopped externally
+        let vm_name_owned = vm_name.to_string();
+        let uri = sys_config.libvirt_uri().to_string();
+        let shutdown_reason = tokio::select! {
+            _ = tokio::signal::ctrl_c() => "ctrl_c",
+            _ = poll_domain_state(&uri, &vm_name_owned) => "external",
+        };
 
         // Stop log subscription, port forwards and inotify bridge
         if let Some(handle) = log_handle {
@@ -364,6 +369,20 @@ impl super::Backend for LibvirtBackend {
             handle.abort();
         }
 
+        if shutdown_reason == "external" {
+            println!("VM '{vm_name}' was stopped externally.");
+        } else {
+            // Ctrl+C: graceful ACPI shutdown
+            let conn = connect(sys_config)?;
+            if let Ok(dom) = Domain::lookup_by_name(&conn, vm_name)
+                && is_running(&dom)
+            {
+                println!("Shutting down VM '{vm_name}'...");
+                shutdown_domain(&dom).await?;
+                println!("VM '{vm_name}' stopped.");
+            }
+        }
+
         Ok(())
     }
 
@@ -371,47 +390,50 @@ impl super::Backend for LibvirtBackend {
         let vm_name = sys_config.display_name();
         let conn = connect(sys_config)?;
 
-        let dom = Domain::lookup_by_name(&conn, vm_name).map_err(|_| RumError::DomainNotFound {
-            name: vm_name.to_string(),
-        })?;
+        match Domain::lookup_by_name(&conn, vm_name) {
+            Ok(dom) => {
+                if !is_running(&dom) {
+                    println!("VM '{vm_name}' is not running.");
+                    return Ok(());
+                }
 
-        if !is_running(&dom) {
-            println!("VM '{vm_name}' is not running.");
-            return Ok(());
-        }
+                // ACPI shutdown
+                tracing::info!(vm_name, "sending ACPI shutdown");
+                dom.shutdown().map_err(|e| RumError::Libvirt {
+                    message: format!("shutdown failed: {e}"),
+                    hint: "VM may not have ACPI support".into(),
+                })?;
 
-        // ACPI shutdown
-        tracing::info!(vm_name, "sending ACPI shutdown");
-        dom.shutdown().map_err(|e| RumError::Libvirt {
-            message: format!("shutdown failed: {e}"),
-            hint: "VM may not have ACPI support".into(),
-        })?;
+                // Wait up to 30s for shutdown
+                let spinner = ProgressBar::new_spinner();
+                spinner.set_message(format!("Waiting for VM '{vm_name}' to shut down..."));
+                spinner.enable_steady_tick(std::time::Duration::from_millis(120));
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+                loop {
+                    if !is_running(&dom) {
+                        spinner.finish_with_message(format!("VM '{vm_name}' stopped."));
+                        return Ok(());
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        spinner.finish_and_clear();
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    spinner.tick();
+                }
 
-        // Wait up to 30s for shutdown
-        let spinner = ProgressBar::new_spinner();
-        spinner.set_message(format!("Waiting for VM '{vm_name}' to shut down..."));
-        spinner.enable_steady_tick(std::time::Duration::from_millis(120));
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            if !is_running(&dom) {
-                spinner.finish_with_message(format!("VM '{vm_name}' stopped."));
-                return Ok(());
+                // Force stop
+                tracing::warn!(vm_name, "ACPI shutdown timed out, force stopping");
+                dom.destroy().map_err(|e| RumError::Libvirt {
+                    message: format!("force stop failed: {e}"),
+                    hint: "check libvirt permissions".into(),
+                })?;
+                println!("VM '{vm_name}' force stopped.");
             }
-            if tokio::time::Instant::now() >= deadline {
-                spinner.finish_and_clear();
-                break;
+            Err(_) => {
+                println!("VM '{vm_name}' is not defined.");
             }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            spinner.tick();
         }
-
-        // Force stop
-        tracing::warn!(vm_name, "ACPI shutdown timed out, force stopping");
-        dom.destroy().map_err(|e| RumError::Libvirt {
-            message: format!("force stop failed: {e}"),
-            hint: "check libvirt permissions".into(),
-        })?;
-        println!("VM '{vm_name}' force stopped.");
 
         Ok(())
     }
@@ -423,7 +445,11 @@ impl super::Backend for LibvirtBackend {
         let config = &sys_config.config;
         let conn = connect(sys_config)?;
 
+        let mut had_domain = false;
+        let mut had_artifacts = false;
+
         if let Ok(dom) = Domain::lookup_by_name(&conn, vm_name) {
+            had_domain = true;
             if is_running(&dom) {
                 tracing::info!(vm_name, "stopping VM before destroy");
                 let _ = dom.destroy();
@@ -450,6 +476,7 @@ impl super::Backend for LibvirtBackend {
         // Remove work dir
         let work = paths::work_dir(id, name_opt);
         if work.exists() {
+            had_artifacts = true;
             tokio::fs::remove_dir_all(&work)
                 .await
                 .map_err(|e| RumError::Io {
@@ -473,7 +500,12 @@ impl super::Backend for LibvirtBackend {
             }
         }
 
-        println!("VM '{vm_name}' destroyed.");
+        match (had_domain, had_artifacts) {
+            (true, _) => println!("VM '{vm_name}' destroyed."),
+            (false, true) => println!("Removed artifacts for '{vm_name}'."),
+            (false, false) => println!("VM '{vm_name}' not found — nothing to destroy."),
+        }
+
         Ok(())
     }
 
@@ -941,4 +973,24 @@ fn parse_vsock_cid(dom: &Domain) -> Option<u32> {
     let remaining = &vsock_section[addr_start..];
     let addr_end = remaining.find(['"', '\''])?;
     remaining[..addr_end].parse::<u32>().ok()
+}
+
+/// Poll domain state until it's no longer running.
+/// Used to detect external `rum down` or `rum destroy`.
+async fn poll_domain_state(uri: &str, vm_name: &str) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // Open a fresh connection for each check to avoid stale state
+        let still_running = (|| {
+            virt_error::clear_error_callback();
+            let mut conn = Connect::open(Some(uri)).ok()?;
+            let dom = Domain::lookup_by_name(&conn, vm_name).ok()?;
+            let active = dom.is_active().unwrap_or(false);
+            conn.close().ok();
+            Some(active)
+        })();
+        if still_running != Some(true) {
+            return;
+        }
+    }
 }
