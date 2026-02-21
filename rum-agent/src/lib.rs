@@ -47,8 +47,17 @@ pub enum RunOn {
 }
 
 #[derive(Debug, Clone, Facet)]
+#[repr(u8)]
+pub enum ProvisionEvent {
+    Stdout(String),
+    Stderr(String),
+    Done(i32),
+}
+
+#[derive(Debug, Clone, Facet)]
 pub struct ProvisionScript {
     pub name: String,
+    pub title: String,
     pub content: String,
     pub order: u32,
     pub run_on: RunOn,
@@ -65,5 +74,5 @@ pub trait RumAgent {
     async fn ping(&self) -> Result<ReadyResponse, String>;
     async fn subscribe_logs(&self, output: Tx<LogEvent>);
     async fn exec(&self, command: String, output: Tx<LogEvent>) -> ExecResult;
-    async fn provision(&self, scripts: Vec<ProvisionScript>, output: Tx<LogEvent>) -> ProvisionResult;
+    async fn provision(&self, scripts: Vec<ProvisionScript>, output: Tx<ProvisionEvent>) -> ProvisionResult;
 }

@@ -101,22 +101,46 @@ impl super::Backend for LibvirtBackend {
             let _ = tokio::fs::remove_dir_all(&work).await;
         }
 
-        // Compute step count: 7 base + one per provisioning phase
+        // Build all provision scripts upfront
+        let mut provision_scripts = Vec::new();
+        if !resolved_fs.is_empty() {
+            provision_scripts.push(rum_agent::ProvisionScript {
+                name: "rum-drives".into(),
+                title: "Setting up drives and filesystems".into(),
+                content: cloudinit::build_drive_script(&resolved_fs),
+                order: 0,
+                run_on: rum_agent::RunOn::System,
+            });
+        }
+        if let Some(ref system) = config.provision.system {
+            provision_scripts.push(rum_agent::ProvisionScript {
+                name: "rum-system".into(),
+                title: "Running system provisioning".into(),
+                content: system.script.clone(),
+                order: 1,
+                run_on: rum_agent::RunOn::System,
+            });
+        }
+        if let Some(ref boot) = config.provision.boot {
+            provision_scripts.push(rum_agent::ProvisionScript {
+                name: "rum-boot".into(),
+                title: "Running boot provisioning".into(),
+                content: boot.script.clone(),
+                order: 2,
+                run_on: rum_agent::RunOn::Boot,
+            });
+        }
+
+        // Compute step count: 7 base + one per provisioning script
         //   1. base image
         //   2. overlay + drives
         //   3. cloud-init seed
         //   4. domain config + network
         //   5. start VM
         //   6. wait for agent
-        //   per-phase: drives/fs, system provision, boot provision
+        //   per-script: drives/fs, system provision, boot provision
         //   last. ready
-        let has_drive_provision = !resolved_fs.is_empty();
-        let has_system_provision = config.provision.system.is_some();
-        let has_boot_provision = config.provision.boot.is_some();
-        let n_provision = usize::from(has_drive_provision)
-            + usize::from(has_system_provision)
-            + usize::from(has_boot_provision);
-        let total_steps = 7 + n_provision;
+        let total_steps = 7 + provision_scripts.len();
         let mut progress = StepProgress::new(total_steps, mode);
 
         // 1. Ensure base image
@@ -284,67 +308,12 @@ impl super::Backend for LibvirtBackend {
             None
         };
 
-        // 7. Run provisioning scripts via agent (one step per phase)
-        if has_drive_provision {
-            if just_started && let Some(ref agent) = agent_client {
-                let script = rum_agent::ProvisionScript {
-                    name: "rum-drives".into(),
-                    content: cloudinit::build_drive_script(&resolved_fs),
-                    order: 0,
-                    run_on: rum_agent::RunOn::System,
-                };
-                progress
-                    .run("Setting up drives and filesystems...", |step| async move {
-                        crate::agent::run_provision(agent, vec![script], |line| {
-                            step.log(line);
-                        })
-                        .await
-                    })
-                    .await?;
-            } else {
-                progress.skip("Drives and filesystems ready");
-            }
-        }
-
-        if has_system_provision {
-            if just_started && let Some(ref agent) = agent_client {
-                let script = rum_agent::ProvisionScript {
-                    name: "rum-system".into(),
-                    content: config.provision.system.as_ref().unwrap().script.clone(),
-                    order: 1,
-                    run_on: rum_agent::RunOn::System,
-                };
-                progress
-                    .run("Running system provisioning...", |step| async move {
-                        crate::agent::run_provision(agent, vec![script], |line| {
-                            step.log(line);
-                        })
-                        .await
-                    })
-                    .await?;
-            } else {
-                progress.skip("System provisioning skipped");
-            }
-        }
-
-        if has_boot_provision {
-            if just_started && let Some(ref agent) = agent_client {
-                let script = rum_agent::ProvisionScript {
-                    name: "rum-boot".into(),
-                    content: config.provision.boot.as_ref().unwrap().script.clone(),
-                    order: 2,
-                    run_on: rum_agent::RunOn::Boot,
-                };
-                progress
-                    .run("Running boot provisioning...", |step| async move {
-                        crate::agent::run_provision(agent, vec![script], |line| {
-                            step.log(line);
-                        })
-                        .await
-                    })
-                    .await?;
-            } else {
-                progress.skip("Boot provisioning skipped");
+        // 7. Run provisioning scripts via agent (single RPC call, one step per script)
+        if just_started && let Some(ref agent) = agent_client && !provision_scripts.is_empty() {
+            crate::agent::run_provision(agent, provision_scripts, &mut progress).await?;
+        } else {
+            for script in &provision_scripts {
+                progress.skip(&format!("{} (skipped)", script.title));
             }
         }
 

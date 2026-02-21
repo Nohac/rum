@@ -13,8 +13,8 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 use roam_stream::{HandshakeConfig, accept};
 use rum_agent::{
-    ExecResult, LogEvent, LogLevel, LogStream, ProvisionResult, ProvisionScript, RunOn, RumAgent,
-    RumAgentDispatcher,
+    ExecResult, LogEvent, LogLevel, LogStream, ProvisionEvent, ProvisionResult, ProvisionScript,
+    RunOn, RumAgent, RumAgentDispatcher,
 };
 
 use std::path::Path;
@@ -73,7 +73,7 @@ impl RumAgent for RumAgentImpl {
         &self,
         _cx: &roam::Context,
         scripts: Vec<ProvisionScript>,
-        output: Tx<LogEvent>,
+        output: Tx<ProvisionEvent>,
     ) -> ProvisionResult {
         tracing::info!(count = scripts.len(), "provision");
 
@@ -109,35 +109,20 @@ impl RumAgent for RumAgentImpl {
             }
         }
 
-        // Determine which scripts to run
-        let is_first_boot = !Path::new(SENTINEL_PATH).exists();
-        let mut to_run: Vec<&ProvisionScript> = if is_first_boot {
-            tracing::info!("first boot — running all scripts");
-            scripts.iter().collect()
-        } else {
-            tracing::info!("subsequent boot — running boot scripts only");
-            scripts
-                .iter()
-                .filter(|s| matches!(s.run_on, RunOn::Boot))
-                .collect()
-        };
-        to_run.sort_by_key(|s| s.order);
+        // Run all received scripts in order — the host controls what to send
+        let mut sorted: Vec<&ProvisionScript> = scripts.iter().collect();
+        sorted.sort_by_key(|s| s.order);
 
-        // Execute each script
-        for s in &to_run {
-            let _ = output
-                .send(&LogEvent {
-                    timestamp_us: now_us(),
-                    level: LogLevel::Info,
-                    target: "provision".into(),
-                    message: format!("running script: {}", s.name),
-                    stream: LogStream::Log,
-                })
-                .await;
+        for s in &sorted {
+            tracing::info!(script = %s.name, "running provision script");
 
-            let result = run_script(&s.content, &s.name, &output).await;
-            if result.exit_code != Some(0) {
-                tracing::error!(script = %s.name, exit_code = ?result.exit_code, "script failed");
+            let exit_code = run_provision_script(&s.content, &output)
+                .await
+                .unwrap_or(-1);
+            let _ = output.send(&ProvisionEvent::Done(exit_code)).await;
+
+            if exit_code != 0 {
+                tracing::error!(script = %s.name, exit_code, "script failed");
                 return ProvisionResult {
                     success: false,
                     failed_script: s.name.clone(),
@@ -145,14 +130,12 @@ impl RumAgent for RumAgentImpl {
             }
         }
 
-        // On first-boot success: create sentinel
-        if is_first_boot {
-            if let Some(parent) = Path::new(SENTINEL_PATH).parent() {
-                let _ = tokio::fs::create_dir_all(parent).await;
-            }
-            if let Err(e) = tokio::fs::write(SENTINEL_PATH, "").await {
-                tracing::error!(error = %e, "failed to create sentinel");
-            }
+        // Create sentinel on success so auto-boot scripts know system was provisioned
+        if let Some(parent) = Path::new(SENTINEL_PATH).parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        if let Err(e) = tokio::fs::write(SENTINEL_PATH, "").await {
+            tracing::error!(error = %e, "failed to create sentinel");
         }
 
         ProvisionResult {
@@ -231,6 +214,57 @@ async fn run_script(content: &str, name: &str, output: &Tx<LogEvent>) -> ExecRes
     ExecResult {
         exit_code: status.and_then(|s| s.code()),
     }
+}
+
+async fn run_provision_script(content: &str, output: &Tx<ProvisionEvent>) -> Option<i32> {
+    let child = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(content)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = output
+                .send(&ProvisionEvent::Stderr(format!("failed to spawn: {e}")))
+                .await;
+            return None;
+        }
+    };
+
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+
+    let mut stdout_lines = BufReader::new(stdout).lines();
+    let mut stderr_lines = BufReader::new(stderr).lines();
+
+    loop {
+        tokio::select! {
+            line = stdout_lines.next_line() => {
+                match line {
+                    Ok(Some(text)) => {
+                        let _ = output.send(&ProvisionEvent::Stdout(text)).await;
+                    }
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+            line = stderr_lines.next_line() => {
+                match line {
+                    Ok(Some(text)) => {
+                        let _ = output.send(&ProvisionEvent::Stderr(text)).await;
+                    }
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+
+    let status = child.wait().await.ok()?;
+    status.code()
 }
 
 /// Handle a single port-forwarding connection over vsock.

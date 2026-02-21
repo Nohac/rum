@@ -32,6 +32,7 @@ pub struct StepProgress {
 struct StepState {
     log_lines: VecDeque<String>,
     done_label: Option<String>,
+    failed: bool,
     /// Number of logical lines currently in the active area.
     drawn_lines: usize,
     label: String,
@@ -124,6 +125,7 @@ impl StepProgress {
         let state = Arc::new(Mutex::new(StepState {
             log_lines: VecDeque::new(),
             done_label: None,
+            failed: false,
             drawn_lines: 0,
             label: label.to_string(),
             prefix: prefix.clone(),
@@ -184,6 +186,7 @@ impl StepProgress {
             .done_label
             .clone()
             .unwrap_or_else(|| label.to_string());
+        let failed = st.failed;
         let log_lines: Vec<String> = st.log_lines.iter().cloned().collect();
         let drawn_lines = st.drawn_lines;
         drop(st);
@@ -205,18 +208,31 @@ impl StepProgress {
             }
 
             // Print completed step — permanent, immune to resize
-            self.term
-                .write_line(&format!(
-                    "[{prefix}] \u{2713} {}",
-                    style(&done_label).green()
-                ))
-                .ok();
+            if failed {
+                self.term
+                    .write_line(&format!(
+                        "[{prefix}] \u{2717} {}",
+                        style(&done_label).red()
+                    ))
+                    .ok();
+            } else {
+                self.term
+                    .write_line(&format!(
+                        "[{prefix}] \u{2713} {}",
+                        style(&done_label).green()
+                    ))
+                    .ok();
+            }
 
             self.term.show_cursor().ok();
         }
 
         if self.mode == OutputMode::Plain {
-            println!("[{prefix}] \u{2713} {done_label}");
+            if failed {
+                println!("[{prefix}] \u{2717} {done_label}");
+            } else {
+                println!("[{prefix}] \u{2713} {done_label}");
+            }
         }
 
         result
@@ -298,5 +314,10 @@ impl Step {
     /// Override the completion label shown with the checkmark.
     pub fn set_done_label(&self, label: impl Into<String>) {
         self.state.lock().unwrap().done_label = Some(label.into());
+    }
+
+    /// Mark this step as failed — shows red ✗ instead of green ✓.
+    pub fn set_failed(&self) {
+        self.state.lock().unwrap().failed = true;
     }
 }

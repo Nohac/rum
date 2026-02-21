@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
 use roam_stream::{Client, Connector, HandshakeConfig, NoDispatcher, connect};
-use rum_agent::{LogEvent, LogLevel, LogStream, RumAgentClient};
+use rum_agent::{LogEvent, LogLevel, LogStream, ProvisionEvent, RumAgentClient};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -7,6 +9,7 @@ use tokio_vsock::{VsockAddr, VsockStream};
 
 use crate::config::PortForward;
 use crate::error::RumError;
+use crate::progress::StepProgress;
 
 /// Static musl rum-agent binary, embedded at compile time via artifact dependency.
 /// No glibc dependency — runs on any Linux guest.
@@ -111,25 +114,64 @@ pub(crate) fn start_log_subscription(agent: &AgentClient) -> JoinHandle<()> {
     })
 }
 
-/// Run provisioning scripts on the guest via the agent RPC.
+/// Run provisioning scripts on the guest via a single agent RPC call.
 ///
-/// Streams log output from the agent via the `on_log` callback and returns
-/// an error if any script fails.
+/// Creates one progress step per script. Each step reads `ProvisionEvent`s
+/// from the shared channel until it receives `Done`.
 pub(crate) async fn run_provision(
     agent: &AgentClient,
     scripts: Vec<rum_agent::ProvisionScript>,
-    mut on_log: impl FnMut(&str),
+    progress: &mut StepProgress,
 ) -> Result<(), RumError> {
-    let (tx, mut rx) = roam::channel::<LogEvent>();
+    let titles: Vec<String> = scripts.iter().map(|s| s.title.clone()).collect();
+
+    let (tx, rx) = roam::channel::<ProvisionEvent>();
     let agent = agent.clone();
+    let task = tokio::spawn(async move { agent.provision(scripts, tx).await });
 
-    let provision_handle = tokio::spawn(async move { agent.provision(scripts, tx).await });
+    let rx = Arc::new(tokio::sync::Mutex::new(rx));
+    let mut failed = false;
 
-    while let Ok(Some(event)) = rx.recv().await {
-        on_log(&event.message);
+    for (i, title) in titles.iter().enumerate() {
+        let rx = rx.clone();
+        let title_owned = title.clone();
+        let success = progress
+            .run(title, |step| async move {
+                let mut rx = rx.lock().await;
+                while let Ok(Some(event)) = rx.recv().await {
+                    match event {
+                        ProvisionEvent::Done(code) => {
+                            if code != 0 {
+                                step.set_failed();
+                                step.set_done_label(format!(
+                                    "{title_owned} (exit code {code})"
+                                ));
+                                return false;
+                            }
+                            return true;
+                        }
+                        ProvisionEvent::Stdout(line) | ProvisionEvent::Stderr(line) => {
+                            step.log(&line);
+                        }
+                    }
+                }
+                // Channel closed without Done
+                step.set_failed();
+                step.set_done_label(format!("{title_owned} (connection lost)"));
+                false
+            })
+            .await;
+
+        if !success {
+            for remaining in &titles[i + 1..] {
+                progress.skip(&format!("{remaining} (skipped)"));
+            }
+            failed = true;
+            break;
+        }
     }
 
-    let result = provision_handle
+    let result = task
         .await
         .map_err(|e| RumError::Io {
             context: format!("provision task panicked: {e}"),
@@ -140,7 +182,7 @@ pub(crate) async fn run_provision(
             source: std::io::Error::other(e.to_string()),
         })?;
 
-    if !result.success {
+    if failed || !result.success {
         return Err(RumError::ProvisionFailed {
             script: result.failed_script,
         });
