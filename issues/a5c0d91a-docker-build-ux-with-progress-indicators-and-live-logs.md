@@ -1,6 +1,6 @@
 # Docker-build UX with progress indicators and live logs
 
-**ID:** a5c0d91a | **Status:** Open | **Created:** 2026-02-20T22:51:40+01:00
+**ID:** a5c0d91a | **Status:** Done | **Created:** 2026-02-20T22:51:40+01:00
 
 ## Summary
 
