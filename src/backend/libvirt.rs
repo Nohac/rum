@@ -167,9 +167,16 @@ impl super::Backend for LibvirtBackend {
             progress.skip("Base image cached");
             image::ensure_base_image(&config.image.base, &cache).await?
         } else {
-            let path = image::ensure_base_image(&config.image.base, &cache).await?;
-            progress.skip("Base image downloaded");
-            path
+            progress
+                .run("Downloading base image...", |step| {
+                    let base_url = config.image.base.clone();
+                    let cache = cache.clone();
+                    async move {
+                        step.set_done_label("Base image downloaded");
+                        image::ensure_base_image(&base_url, &cache).await
+                    }
+                })
+                .await?
         };
 
         // 2. Create overlay + extra drives
