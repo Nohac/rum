@@ -1,6 +1,6 @@
 # VM lifecycle and state management improvements
 
-**ID:** 295fd927 | **Status:** Open | **Created:** 2026-02-21T14:08:44+01:00
+**ID:** 295fd927 | **Status:** Done | **Created:** 2026-02-21T14:08:44+01:00
 
 Several rough edges around VM lifecycle and concurrent state management.
 

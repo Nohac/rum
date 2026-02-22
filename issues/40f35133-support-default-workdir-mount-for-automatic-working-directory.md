@@ -1,6 +1,6 @@
 # Support default/workdir mount for automatic working directory
 
-**ID:** 40f35133 | **Status:** Open | **Created:** 2026-02-14T16:05:47+01:00
+**ID:** 40f35133 | **Status:** Done | **Created:** 2026-02-14T16:05:47+01:00
 
 When a mount is marked as the default/workdir, the user's shell should automatically `cd` into that directory on login (via serial console or SSH).
 

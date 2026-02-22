@@ -80,6 +80,7 @@ Rust 2024 edition. Code is split into focused modules — avoid monolithic files
 
 ## Git Workflow
 
+- **Never use `git -C`** — `cd` into the directory first, then run git commands. `git -C` cannot be whitelisted in permission settings
 - Keep a **linear history** — no merge commits
 - Use `git cherry-pick` to integrate feature branches onto main (preferred over merge)
 - Rebase feature branches onto `main` before merging if they've diverged
@@ -90,7 +91,7 @@ Rust 2024 edition. Code is split into focused modules — avoid monolithic files
 For batching multiple fixes, use git worktrees with parallel agents:
 
 1. **Group issues by file overlap** — issues touching the same files go in the same batch (sequential), non-overlapping issues run in parallel
-2. **Create worktrees**: `git -C rum worktree add ../wN -b fix/issue-slug`
+2. **Create worktrees**: `cd rum && git worktree add ../wN -b fix/issue-slug`
 3. **Launch `general-purpose` agents** (NOT `Bash` agents — those lack Write/Edit tools). Each agent makes changes, runs `cargo build && cargo test`, and updates the issue status. Agents must NOT run git commands — commit from the main context
 4. **Commit from main context** after agents complete
 5. **Cherry-pick onto main**: `git cherry-pick <hash>` for linear history. Resolve conflicts manually if branches touch the same files
