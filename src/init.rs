@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use inquire::{Confirm, CustomType, Select, Text};
@@ -53,12 +54,19 @@ struct WizardFs {
 pub fn run(defaults: bool) -> Result<(), RumError> {
     let output_path = PathBuf::from("rum.toml");
 
+    if output_path.exists() && defaults {
+        return Err(RumError::Validation {
+            message: "rum.toml already exists (use interactive mode to overwrite)".into(),
+        });
+    }
+
+    if !defaults && !std::io::stdin().is_terminal() {
+        return Err(RumError::Validation {
+            message: "rum init requires a terminal for the interactive wizard. Use --defaults for non-interactive mode.".into(),
+        });
+    }
+
     if output_path.exists() {
-        if defaults {
-            return Err(RumError::Validation {
-                message: "rum.toml already exists (use interactive mode to overwrite)".into(),
-            });
-        }
         let overwrite = Confirm::new("rum.toml already exists. Overwrite?")
             .with_default(false)
             .prompt()

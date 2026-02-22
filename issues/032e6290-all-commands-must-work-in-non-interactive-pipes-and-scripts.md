@@ -1,6 +1,6 @@
 # All commands must work in non-interactive pipes and scripts
 
-**ID:** 032e6290 | **Status:** Open | **Created:** 2026-02-22T14:57:18+01:00
+**ID:** 032e6290 | **Status:** Done | **Created:** 2026-02-22T14:57:18+01:00
 
 ## Summary
 

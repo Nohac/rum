@@ -1,4 +1,5 @@
 use std::fmt;
+use std::io::IsTerminal;
 use std::path::Path;
 
 use indicatif::ProgressBar;
@@ -136,13 +137,22 @@ async fn fetch_fedora_images() -> Vec<CloudImage> {
 // ── Registry assembly ────────────────────────────────────
 
 async fn all_images() -> Vec<CloudImage> {
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_message("Fetching cloud image registry...");
-    spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+    let use_spinner = std::io::stderr().is_terminal();
+
+    let spinner = if use_spinner {
+        let s = ProgressBar::new_spinner();
+        s.set_message("Fetching cloud image registry...");
+        s.enable_steady_tick(std::time::Duration::from_millis(80));
+        Some(s)
+    } else {
+        None
+    };
 
     let fedora_images = fetch_fedora_images().await;
 
-    spinner.finish_and_clear();
+    if let Some(s) = spinner {
+        s.finish_and_clear();
+    }
 
     let mut images: Vec<CloudImage> = PRESETS
         .iter()
@@ -286,6 +296,14 @@ pub async fn search(query: Option<&str>, config_path: &Path) -> Result<(), RumEr
             None => "No images available".to_string(),
         };
         return Err(RumError::Validation { message: msg });
+    }
+
+    // Non-interactive: print tab-separated list and exit
+    if !std::io::stdout().is_terminal() {
+        for img in &filtered {
+            println!("{}\t{}", img.label, img.url);
+        }
+        return Ok(());
     }
 
     let labels: Vec<String> = filtered.iter().map(|img| img.label.clone()).collect();
