@@ -1,6 +1,6 @@
 # Wait for boot completion instead of showing full serial log
 
-**ID:** a0168603 | **Status:** Open | **Created:** 2026-02-16T23:32:26+01:00
+**ID:** a0168603 | **Status:** Done | **Created:** 2026-02-16T23:32:26+01:00
 
 After `rum up`, the CLI currently attaches `virsh console` and streams the full serial log. Instead, the CLI should show a progress/spinner and wait for boot to complete, then drop into a shell or report success.
 

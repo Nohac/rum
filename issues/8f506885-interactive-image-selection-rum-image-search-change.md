@@ -1,6 +1,6 @@
 # Interactive image selection: rum image search/change
 
-**ID:** 8f506885 | **Status:** Open | **Created:** 2026-02-21T14:10:34+01:00
+**ID:** 8f506885 | **Status:** Done | **Created:** 2026-02-21T14:10:34+01:00
 
 **Depends on:** aaff7296 (image management commands)
 
