@@ -1085,6 +1085,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "facet-json"
+version = "0.43.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e761fe27fd484eeef93c996d2dfeadfc04f84c8191ea7f061be864da821778f7"
+dependencies = [
+ "facet",
+ "facet-core",
+ "facet-format",
+ "facet-reflect",
+ "memchr",
+]
+
+[[package]]
 name = "facet-macro-parse"
 version = "0.43.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2933,7 +2946,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3309,6 +3322,7 @@ dependencies = [
  "console",
  "dirs",
  "facet",
+ "facet-json",
  "facet-toml",
  "facet-value",
  "facet-xml",

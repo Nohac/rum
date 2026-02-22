@@ -369,6 +369,15 @@ authorized_keys = ["ssh-ed25519 AAAA... user@host"]
 }
 
 #[test]
+fn image_search_help_works() {
+    rum()
+        .args(["image", "search", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Search cloud image registry"));
+}
+
+#[test]
 fn config_with_ports_section() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("rum.toml");

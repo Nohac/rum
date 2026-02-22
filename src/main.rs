@@ -57,6 +57,9 @@ async fn main() -> miette::Result<()> {
         return rum::init::run(defaults).map_err(Into::into);
     }
 
+    // Clone config path before moving cli.command — Search needs it
+    let config_path = cli.config.clone();
+
     // Handle image commands before loading config — they don't need a rum.toml
     if let Command::Image { action } = cli.command {
         let cache_dir = rum::paths::cache_dir();
@@ -66,6 +69,11 @@ async fn main() -> miette::Result<()> {
                 rum::image::delete_cached(&cache_dir, &name).map_err(Into::into)
             }
             ImageCommand::Clear => rum::image::clear_cache(&cache_dir).map_err(Into::into),
+            ImageCommand::Search { query } => {
+                rum::registry::search(query.as_deref(), &config_path)
+                    .await
+                    .map_err(Into::into)
+            }
         };
     }
 

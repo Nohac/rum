@@ -1,4 +1,3 @@
-use std::fmt;
 use std::path::PathBuf;
 
 use inquire::{Confirm, CustomType, Select, Text};
@@ -6,47 +5,8 @@ use inquire::validator::Validation;
 
 use crate::config::sanitize_tag;
 use crate::error::RumError;
+use crate::registry;
 use crate::util::parse_size;
-
-// ── OS image presets ─────────────────────────────────────
-
-struct OsPreset {
-    label: &'static str,
-    url: &'static str,
-}
-
-impl fmt::Display for OsPreset {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.label)
-    }
-}
-
-const OS_PRESETS: &[OsPreset] = &[
-    OsPreset {
-        label: "Ubuntu 24.04 LTS (Noble)",
-        url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img",
-    },
-    OsPreset {
-        label: "Ubuntu 22.04 LTS (Jammy)",
-        url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img",
-    },
-    OsPreset {
-        label: "Fedora Cloud 43",
-        url: "https://download.fedoraproject.org/pub/fedora/linux/releases/43/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-43-1.6.x86_64.qcow2",
-    },
-    OsPreset {
-        label: "Debian 12 (Bookworm)",
-        url: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2",
-    },
-    OsPreset {
-        label: "Arch Linux",
-        url: "https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2",
-    },
-    OsPreset {
-        label: "Alpine Linux 3.21",
-        url: "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/cloud/nocloud_alpine-3.21.3-x86_64-bios-cloudinit-r0.qcow2",
-    },
-];
 
 // ── wizard state ─────────────────────────────────────────
 
@@ -55,6 +15,7 @@ struct WizardConfig {
     image_comment: Option<String>,
     cpus: u32,
     memory_mb: u64,
+    disk: String,
     hostname: String,
     nat: bool,
     interfaces: Vec<WizardInterface>,
@@ -128,11 +89,13 @@ pub fn run(defaults: bool) -> Result<(), RumError> {
 // ── defaults ─────────────────────────────────────────────
 
 fn default_config() -> WizardConfig {
+    let presets = registry::preset_labels_and_urls();
     WizardConfig {
-        image_url: OS_PRESETS[0].url.to_string(),
-        image_comment: Some(OS_PRESETS[0].label.to_string()),
+        image_url: presets[0].1.to_string(),
+        image_comment: Some(presets[0].0.to_string()),
         cpus: 2,
         memory_mb: 2048,
+        disk: "20G".into(),
         hostname: String::new(),
         nat: true,
         interfaces: vec![],
@@ -190,6 +153,7 @@ fn run_wizard() -> Result<WizardConfig, RumError> {
     let mut image_comment = None;
     let mut cpus = 2u32;
     let mut memory_mb = 2048u64;
+    let mut disk = "20G".to_string();
     let mut hostname = String::new();
     let mut nat = true;
     let mut interfaces = Vec::new();
@@ -211,9 +175,10 @@ fn run_wizard() -> Result<WizardConfig, RumError> {
                 Err(e) => return Err(e),
             },
             WizardStep::Resources => match prompt_resources() {
-                Ok((c, m)) => {
+                Ok((c, m, d)) => {
                     cpus = c;
                     memory_mb = m;
+                    disk = d;
                     step = step.next();
                 }
                 Err(RumError::InitCancelled) => step = step.prev(),
@@ -262,6 +227,7 @@ fn run_wizard() -> Result<WizardConfig, RumError> {
         image_comment,
         cpus,
         memory_mb,
+        disk,
         hostname,
         nat,
         interfaces,
@@ -308,7 +274,8 @@ fn detect_backend() -> Result<(), RumError> {
 }
 
 fn prompt_os_image() -> Result<(String, Option<String>), RumError> {
-    let mut labels: Vec<String> = OS_PRESETS.iter().map(|p| p.label.to_string()).collect();
+    let presets = registry::preset_labels_and_urls();
+    let mut labels: Vec<String> = presets.iter().map(|(label, _)| label.to_string()).collect();
     labels.push("Custom URL".to_string());
 
     let choice = Select::new("OS image:", labels)
@@ -331,12 +298,12 @@ fn prompt_os_image() -> Result<(String, Option<String>), RumError> {
             .map_err(map_inquire_err)?;
         Ok((url, None))
     } else {
-        let preset = OS_PRESETS.iter().find(|p| p.label == choice).unwrap();
-        Ok((preset.url.to_string(), Some(preset.label.to_string())))
+        let (label, url) = presets.iter().find(|(l, _)| *l == choice).unwrap();
+        Ok((url.to_string(), Some(label.to_string())))
     }
 }
 
-fn prompt_resources() -> Result<(u32, u64), RumError> {
+fn prompt_resources() -> Result<(u32, u64, String), RumError> {
     let cpus: u32 = CustomType::new("CPUs:")
         .with_default(2)
         .with_help_message("Number of virtual CPUs (minimum 1)")
@@ -370,7 +337,17 @@ fn prompt_resources() -> Result<(u32, u64), RumError> {
 
     let memory_mb = parse_size(&memory_input).unwrap() / (1024 * 1024);
 
-    Ok((cpus, memory_mb))
+    let disk = Text::new("Root disk size:")
+        .with_default("20G")
+        .with_help_message("e.g. '20G', '50G' — cloud image root partition grows to this size")
+        .with_validator(|input: &str| match parse_size(input) {
+            Ok(_) => Ok(Validation::Valid),
+            Err(e) => Ok(Validation::Invalid(format!("{e}").into())),
+        })
+        .prompt()
+        .map_err(map_inquire_err)?;
+
+    Ok((cpus, memory_mb, disk))
 }
 
 fn prompt_hostname() -> Result<String, RumError> {
@@ -625,6 +602,7 @@ fn generate_toml(config: &WizardConfig) -> String {
     out.push_str("[resources]\n");
     out.push_str(&format!("cpus = {}\n", config.cpus));
     out.push_str(&format!("memory_mb = {}\n", config.memory_mb));
+    out.push_str(&format!("disk = \"{}\"\n", config.disk));
     out.push('\n');
 
     // [network]
@@ -730,9 +708,10 @@ mod tests {
         let config = default_config();
         let toml = generate_toml(&config);
 
+        let presets = registry::preset_labels_and_urls();
         // Must parse back as a valid rum Config
         let parsed: crate::config::Config = facet_toml::from_str(&toml).unwrap();
-        assert_eq!(parsed.image.base, OS_PRESETS[0].url);
+        assert_eq!(parsed.image.base, presets[0].1);
         assert_eq!(parsed.resources.cpus, 2);
         assert_eq!(parsed.resources.memory_mb, 2048);
     }

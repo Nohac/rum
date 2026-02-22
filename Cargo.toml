@@ -24,6 +24,7 @@ futures-util = "0.3"
 facet-value = "0.43"
 facet-yaml = "0.43"
 facet-xml = "0.43"
+facet-json = "0.43"
 inquire = "0.7"
 ssh-key = { version = "0.6", features = ["ed25519", "rand_core", "getrandom"] }
 rand_core = { version = "0.6", features = ["getrandom"] }

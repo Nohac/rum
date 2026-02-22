@@ -96,4 +96,9 @@ pub enum ImageCommand {
     },
     /// Delete all cached images
     Clear,
+    /// Search cloud image registry and update rum.toml
+    Search {
+        /// Filter images by name (e.g. "ubuntu", "fedora")
+        query: Option<String>,
+    },
 }
