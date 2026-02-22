@@ -78,6 +78,13 @@ pub enum Command {
         rum: bool,
     },
 
+    /// Run a command inside the VM
+    Exec {
+        /// Command to run inside the VM
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
     /// Manage cached base images
     Image {
         #[command(subcommand)]

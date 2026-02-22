@@ -723,6 +723,31 @@ impl super::Backend for LibvirtBackend {
     }
 }
 
+/// Look up the vsock CID for a running VM.
+///
+/// Connects to libvirt, verifies the domain exists and is running,
+/// then parses the auto-assigned CID from the live domain XML.
+pub fn get_vsock_cid(sys_config: &SystemConfig) -> Result<u32, RumError> {
+    let vm_name = sys_config.display_name();
+    let conn = connect(sys_config)?;
+
+    let dom = Domain::lookup_by_name(&conn, vm_name).map_err(|_| RumError::DomainNotFound {
+        name: vm_name.to_string(),
+    })?;
+
+    if !is_running(&dom) {
+        return Err(RumError::ExecNotReady {
+            name: vm_name.to_string(),
+            reason: "VM is not running".into(),
+        });
+    }
+
+    parse_vsock_cid(&dom).ok_or_else(|| RumError::ExecNotReady {
+        name: vm_name.to_string(),
+        reason: "could not determine vsock CID from domain XML".into(),
+    })
+}
+
 fn get_vm_ip(dom: &Domain, sys_config: &SystemConfig) -> Result<String, RumError> {
     let vm_name = sys_config.display_name();
     let ifaces = dom

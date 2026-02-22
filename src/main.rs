@@ -99,6 +99,16 @@ async fn main() -> miette::Result<()> {
         Command::Log { failed, all, rum } => {
             handle_log_command(&logs_dir, failed, all, rum)?;
         }
+        Command::Exec { args } => {
+            if args.is_empty() {
+                eprintln!("Usage: rum exec <command> [args...]");
+                std::process::exit(1);
+            }
+            let command = args.join(" ");
+            let cid = rum::backend::libvirt::get_vsock_cid(&sys_config)?;
+            let exit_code = rum::agent::run_exec(cid, command).await?;
+            std::process::exit(exit_code);
+        }
         Command::DumpIso { dir } => {
             use rum::cloudinit;
             let mounts = sys_config.resolve_mounts()?;

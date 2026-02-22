@@ -1,6 +1,6 @@
 # Add rum exec command for running commands inside the VM
 
-**ID:** d3495e06 | **Status:** Open | **Created:** 2026-02-22T14:11:33+01:00
+**ID:** d3495e06 | **Status:** Done | **Created:** 2026-02-22T14:11:33+01:00
 
 ## Summary
 

@@ -64,6 +64,10 @@ pub enum RumError {
     #[diagnostic(help("ensure the VM is running with `rum status`"))]
     SshNotReady { name: String, reason: String },
 
+    #[error("exec not ready for '{name}': {reason}")]
+    #[diagnostic(help("ensure the VM is running with `rum up` first"))]
+    ExecNotReady { name: String, reason: String },
+
     #[error("init cancelled by user")]
     InitCancelled,
 
