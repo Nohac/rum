@@ -120,6 +120,8 @@ pub struct Config {
     #[facet(default)]
     pub ssh: SshConfig,
     #[facet(default)]
+    pub user: UserConfig,
+    #[facet(default)]
     pub mounts: Vec<MountConfig>,
     #[facet(default)]
     pub drives: BTreeMap<String, DriveConfig>,
@@ -238,6 +240,24 @@ impl Default for SshConfig {
             command: "ssh".into(),
             interface: String::new(),
             authorized_keys: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Facet)]
+#[facet(default)]
+pub struct UserConfig {
+    #[facet(default = "rum")]
+    pub name: String,
+    #[facet(default)]
+    pub groups: Vec<String>,
+}
+
+impl Default for UserConfig {
+    fn default() -> Self {
+        Self {
+            name: "rum".into(),
+            groups: Vec::new(),
         }
     }
 }
@@ -858,6 +878,7 @@ pub mod tests {
             provision: ProvisionConfig::default(),
             advanced: AdvancedConfig::default(),
             ssh: SshConfig::default(),
+            user: UserConfig::default(),
             mounts: vec![],
             drives: BTreeMap::new(),
             fs: BTreeMap::new(),

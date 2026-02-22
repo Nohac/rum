@@ -1,6 +1,6 @@
 # Configurable user groups and roles for VM provisioning
 
-**ID:** 4fde917e | **Status:** Open | **Created:** 2026-02-22T14:11:34+01:00
+**ID:** 4fde917e | **Status:** Done | **Created:** 2026-02-22T14:11:34+01:00
 
 ## Summary
 

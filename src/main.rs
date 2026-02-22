@@ -105,6 +105,8 @@ async fn main() -> miette::Result<()> {
             let seed_path = dir.join("seed.iso");
             let seed_config = cloudinit::SeedConfig {
                 hostname: sys_config.hostname(),
+                user_name: &sys_config.config.user.name,
+                user_groups: &sys_config.config.user.groups,
                 mounts: &mounts,
                 autologin: sys_config.config.advanced.autologin,
                 ssh_keys: &[],

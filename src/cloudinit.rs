@@ -10,6 +10,8 @@ use crate::iso9660::{self, IsoFile};
 /// Configuration for cloud-init seed ISO generation.
 pub struct SeedConfig<'a> {
     pub hostname: &'a str,
+    pub user_name: &'a str,
+    pub user_groups: &'a [String],
     pub mounts: &'a [ResolvedMount],
     pub autologin: bool,
     pub ssh_keys: &'a [String],
@@ -20,6 +22,10 @@ pub struct SeedConfig<'a> {
 pub fn seed_hash(config: &SeedConfig) -> String {
     let mut hasher = DefaultHasher::new();
     config.hostname.hash(&mut hasher);
+    config.user_name.hash(&mut hasher);
+    for g in config.user_groups {
+        g.hash(&mut hasher);
+    }
     for m in config.mounts {
         m.tag.hash(&mut hasher);
         m.target.hash(&mut hasher);
@@ -89,24 +95,35 @@ pub async fn generate_seed_iso(
     Ok(())
 }
 
-const AUTOLOGIN_DROPIN: &str = "\
-[Service]
-ExecStart=
-ExecStart=-/sbin/agetty --autologin rum --noclear --keep-baud 115200,38400,9600 %I $TERM
-";
+fn autologin_dropin(user_name: &str) -> String {
+    format!(
+        "[Service]\n\
+         ExecStart=\n\
+         ExecStart=-/sbin/agetty --autologin {user_name} --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
+    )
+}
 
 fn build_user_data(config: &SeedConfig) -> String {
     let mounts = config.mounts;
     let autologin = config.autologin;
     let ssh_keys = config.ssh_keys;
     let agent_binary = config.agent_binary;
+    let user_name = config.user_name;
+    let user_groups = config.user_groups;
     let mut user = value!({
-        "name": "rum",
-        "plain_text_passwd": "rum",
+        "name": (user_name),
+        "plain_text_passwd": (user_name),
         "lock_passwd": false,
         "shell": "/bin/bash",
         "sudo": "ALL=(ALL) NOPASSWD:ALL",
     });
+
+    if !user_groups.is_empty() {
+        let groups_str = user_groups.join(",");
+        if let Some(obj) = user.as_object_mut() {
+            obj.insert("groups", Value::from(groups_str.as_str()));
+        }
+    }
 
     if !ssh_keys.is_empty() {
         let keys_array = VArray::from_iter(ssh_keys.iter().map(|k| Value::from(k.as_str())));
@@ -133,9 +150,10 @@ fn build_user_data(config: &SeedConfig) -> String {
     }
 
     if autologin {
+        let dropin = autologin_dropin(user_name);
         write_files.push(value!({
             "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
-            "content": (AUTOLOGIN_DROPIN),
+            "content": (dropin.as_str()),
         }));
     }
 
@@ -370,6 +388,8 @@ mod tests {
     fn default_seed_config() -> SeedConfig<'static> {
         SeedConfig {
             hostname: "",
+            user_name: "rum",
+            user_groups: &[],
             mounts: &[],
             autologin: false,
             ssh_keys: &[],
@@ -409,7 +429,7 @@ mod tests {
         let config = default_seed_config();
         let ud = build_user_data(&config);
         assert!(!ud.contains("autologin.conf"));
-        assert!(!ud.contains("--autologin rum"));
+        assert!(!ud.contains("--autologin"));
         assert!(!ud.contains("serial-getty@ttyS0.service"));
     }
 
@@ -566,5 +586,54 @@ mod tests {
         let ud = build_user_data(&config);
         assert!(ud.contains("rum-workdir.sh"));
         assert!(ud.contains("cd /mnt/project"));
+    }
+
+    #[test]
+    fn user_data_with_groups() {
+        let groups = vec!["docker".to_string(), "video".to_string()];
+        let config = SeedConfig { user_groups: &groups, ..default_seed_config() };
+        let ud = build_user_data(&config);
+        assert!(ud.contains("groups: docker,video"), "user-data should contain groups: {ud}");
+    }
+
+    #[test]
+    fn user_data_without_groups_omits_groups() {
+        let config = default_seed_config();
+        let ud = build_user_data(&config);
+        assert!(!ud.contains("groups:"), "user-data should not contain groups when empty: {ud}");
+    }
+
+    #[test]
+    fn user_data_custom_user_name() {
+        let config = SeedConfig { user_name: "myuser", ..default_seed_config() };
+        let ud = build_user_data(&config);
+        assert!(ud.contains("name: myuser"), "user-data should use custom user name: {ud}");
+        assert!(ud.contains("plain_text_passwd: myuser"), "password should match user name: {ud}");
+    }
+
+    #[test]
+    fn user_data_custom_user_autologin() {
+        let config = SeedConfig {
+            user_name: "myuser",
+            autologin: true,
+            ..default_seed_config()
+        };
+        let ud = build_user_data(&config);
+        assert!(ud.contains("--autologin myuser"), "autologin dropin should use custom user: {ud}");
+    }
+
+    #[test]
+    fn seed_hash_changes_with_user_name() {
+        let config1 = default_seed_config();
+        let config2 = SeedConfig { user_name: "other", ..default_seed_config() };
+        assert_ne!(seed_hash(&config1), seed_hash(&config2));
+    }
+
+    #[test]
+    fn seed_hash_changes_with_groups() {
+        let groups = vec!["docker".to_string()];
+        let config1 = default_seed_config();
+        let config2 = SeedConfig { user_groups: &groups, ..default_seed_config() };
+        assert_ne!(seed_hash(&config1), seed_hash(&config2));
     }
 }

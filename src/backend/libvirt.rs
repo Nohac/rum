@@ -80,6 +80,8 @@ impl super::Backend for LibvirtBackend {
 
         let seed_config = cloudinit::SeedConfig {
             hostname: sys_config.hostname(),
+            user_name: &config.user.name,
+            user_groups: &config.user.groups,
             mounts: &mounts,
             autologin: config.advanced.autologin,
             ssh_keys: &ssh_keys,
