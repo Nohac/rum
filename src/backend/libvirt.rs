@@ -143,6 +143,7 @@ impl super::Backend for LibvirtBackend {
         //   last. ready
         let total_steps = 8 + provision_scripts.len();
         let mut progress = StepProgress::new(total_steps, mode);
+        let mut provision_error: Option<RumError> = None;
 
         let ctrl_c = tokio::signal::ctrl_c();
         tokio::pin!(ctrl_c);
@@ -165,11 +166,12 @@ impl super::Backend for LibvirtBackend {
         };
 
         // 2. Create overlay + extra drives
+        let disk_size = crate::util::parse_size(&config.resources.disk)?;
         if !overlay_path.exists() || drives.iter().any(|d| !d.path.exists()) {
             progress
                 .run("Creating disk overlay...", |_step| async {
                     if !overlay_path.exists() {
-                        overlay::create_overlay(&base, &overlay_path).await?;
+                        overlay::create_overlay(&base, &overlay_path, Some(disk_size)).await?;
                     }
                     for d in &drives {
                         if !d.path.exists() {
@@ -318,7 +320,9 @@ impl super::Backend for LibvirtBackend {
         // 7. Run provisioning scripts via agent
         let logs = paths::logs_dir(id, name_opt);
         if just_started && let Some(ref agent) = agent_client && !provision_scripts.is_empty() {
-            crate::agent::run_provision(agent, provision_scripts, &mut progress, &logs).await?;
+            if let Err(e) = crate::agent::run_provision(agent, provision_scripts, &mut progress, &logs).await {
+                provision_error = Some(e);
+            }
         } else {
             for script in &provision_scripts {
                 progress.skip(&format!("{} (skipped)", script.title));
@@ -350,7 +354,11 @@ impl super::Backend for LibvirtBackend {
             None
         };
 
-        progress.skip("Ready");
+        if provision_error.is_some() {
+            progress.skip("Provisioning failed — VM kept running for debugging");
+        } else {
+            progress.skip("Ready");
+        }
 
         for pf in &config.ports {
             progress.info(&format!(
@@ -361,7 +369,11 @@ impl super::Backend for LibvirtBackend {
             ));
         }
 
-        progress.println("VM is running. Press Ctrl+C to stop...");
+        if provision_error.is_some() {
+            progress.println("Use `rum ssh` to debug, `rum log --failed` for logs. Press Ctrl+C to stop...");
+        } else {
+            progress.println("VM is running. Press Ctrl+C to stop...");
+        }
 
         // Wait for Ctrl+C or external domain stop
         tokio::select! {
@@ -405,7 +417,13 @@ impl super::Backend for LibvirtBackend {
             progress.skip("Shutdown (not needed)");
         }
 
-        result
+        result?;
+
+        if let Some(e) = provision_error {
+            return Err(e);
+        }
+
+        Ok(())
     }
 
     async fn down(&self, sys_config: &SystemConfig) -> Result<(), RumError> {

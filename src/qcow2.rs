@@ -121,9 +121,17 @@ pub fn create_qcow2(path: &Path, size: &str) -> Result<(), RumError> {
 /// Create a QCOW2 overlay image at `overlay_path` backed by `backing_file`.
 ///
 /// The backing file must be an existing QCOW2 image.  Its virtual size is
-/// read from the header and copied into the overlay.  The backing file path
-/// is stored as its absolute canonical form.
-pub fn create_qcow2_overlay(overlay_path: &Path, backing_file: &Path) -> Result<(), RumError> {
+/// read from the header and used as a baseline.  If `virtual_size_override`
+/// is provided and larger than the backing file's size, the overlay uses the
+/// larger value — QEMU sees the overlay as the bigger disk and cloud-init's
+/// `growpart` expands the root partition on first boot.
+///
+/// The backing file path is stored as its absolute canonical form.
+pub fn create_qcow2_overlay(
+    overlay_path: &Path,
+    backing_file: &Path,
+    virtual_size_override: Option<u64>,
+) -> Result<(), RumError> {
     if let Some(parent) = overlay_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| RumError::Io {
             context: format!("creating directory {}", parent.display()),
@@ -151,7 +159,11 @@ pub fn create_qcow2_overlay(overlay_path: &Path, backing_file: &Path) -> Result<
         })?;
         buf
     };
-    let virtual_size = u64::from_be_bytes(backing_header[24..32].try_into().unwrap());
+    let backing_size = u64::from_be_bytes(backing_header[24..32].try_into().unwrap());
+    let virtual_size = match virtual_size_override {
+        Some(override_size) => override_size.max(backing_size),
+        None => backing_size,
+    };
 
     let image = build_qcow2_with_backing(virtual_size, &backing_path_str);
 
@@ -359,7 +371,7 @@ mod tests {
         create_qcow2(&base, "1G").unwrap();
 
         let overlay = dir.path().join("overlay.qcow2");
-        create_qcow2_overlay(&overlay, &base).unwrap();
+        create_qcow2_overlay(&overlay, &base, None).unwrap();
 
         let data = std::fs::read(&overlay).unwrap();
         assert_eq!(&data[0..4], &[0x51, 0x46, 0x49, 0xFB]);
@@ -372,7 +384,7 @@ mod tests {
         create_qcow2(&base, "1G").unwrap();
 
         let overlay = dir.path().join("overlay.qcow2");
-        create_qcow2_overlay(&overlay, &base).unwrap();
+        create_qcow2_overlay(&overlay, &base, None).unwrap();
 
         let data = std::fs::read(&overlay).unwrap();
         let offset = u64::from_be_bytes(data[8..16].try_into().unwrap());
@@ -389,7 +401,7 @@ mod tests {
         let expected_len = canonical.to_string_lossy().len() as u32;
 
         let overlay = dir.path().join("overlay.qcow2");
-        create_qcow2_overlay(&overlay, &base).unwrap();
+        create_qcow2_overlay(&overlay, &base, None).unwrap();
 
         let data = std::fs::read(&overlay).unwrap();
         let name_len = u32::from_be_bytes(data[16..20].try_into().unwrap());
@@ -406,7 +418,7 @@ mod tests {
         let path_str = canonical.to_string_lossy();
 
         let overlay = dir.path().join("overlay.qcow2");
-        create_qcow2_overlay(&overlay, &base).unwrap();
+        create_qcow2_overlay(&overlay, &base, None).unwrap();
 
         let data = std::fs::read(&overlay).unwrap();
         let stored = std::str::from_utf8(&data[72..72 + path_str.len()]).unwrap();
@@ -420,10 +432,40 @@ mod tests {
         create_qcow2(&base, "20G").unwrap();
 
         let overlay = dir.path().join("overlay.qcow2");
-        create_qcow2_overlay(&overlay, &base).unwrap();
+        create_qcow2_overlay(&overlay, &base, None).unwrap();
 
         let data = std::fs::read(&overlay).unwrap();
         let overlay_size = u64::from_be_bytes(data[24..32].try_into().unwrap());
         assert_eq!(overlay_size, 20 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn overlay_with_size_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base.qcow2");
+        create_qcow2(&base, "1G").unwrap();
+
+        let override_size = 20 * 1024 * 1024 * 1024u64; // 20G
+        let overlay = dir.path().join("overlay.qcow2");
+        create_qcow2_overlay(&overlay, &base, Some(override_size)).unwrap();
+
+        let data = std::fs::read(&overlay).unwrap();
+        let overlay_size = u64::from_be_bytes(data[24..32].try_into().unwrap());
+        assert_eq!(overlay_size, override_size);
+    }
+
+    #[test]
+    fn overlay_size_override_smaller_than_backing_uses_backing() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base.qcow2");
+        create_qcow2(&base, "20G").unwrap();
+
+        let small_override = 1024 * 1024 * 1024u64; // 1G — smaller than 20G backing
+        let overlay = dir.path().join("overlay.qcow2");
+        create_qcow2_overlay(&overlay, &base, Some(small_override)).unwrap();
+
+        let data = std::fs::read(&overlay).unwrap();
+        let overlay_size = u64::from_be_bytes(data[24..32].try_into().unwrap());
+        assert_eq!(overlay_size, 20 * 1024 * 1024 * 1024); // keeps backing size
     }
 }

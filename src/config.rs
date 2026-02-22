@@ -138,6 +138,8 @@ pub struct ImageConfig {
 pub struct ResourcesConfig {
     pub cpus: u32,
     pub memory_mb: u64,
+    #[facet(default = "20G")]
+    pub disk: String,
 }
 
 #[derive(Debug, Clone, Default, Facet)]
@@ -468,6 +470,9 @@ fn validate_config(config: &Config) -> Result<(), RumError> {
         return Err(RumError::Validation {
             message: "memory_mb must be at least 256".into(),
         });
+    }
+    if !config.resources.disk.is_empty() {
+        crate::util::parse_size(&config.resources.disk)?;
     }
 
     // Validate mounts
@@ -847,6 +852,7 @@ pub mod tests {
             resources: ResourcesConfig {
                 cpus: 1,
                 memory_mb: 512,
+                disk: "20G".into(),
             },
             network: NetworkConfig::default(),
             provision: ProvisionConfig::default(),
