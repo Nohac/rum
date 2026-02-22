@@ -1,6 +1,6 @@
 # Ctrl+C during first boot should destroy VM state
 
-**ID:** 5739a803 | **Status:** Open | **Created:** 2026-02-21T16:17:56+01:00
+**ID:** 5739a803 | **Status:** Done | **Created:** 2026-02-21T16:17:56+01:00
 
 If Ctrl+C fires during first boot (while cloud-init is running — deploying agent, writing files, running provisioning scripts), the VM is shut down but its state is preserved. On next `rum up`, cloud-init won't re-run because it already marked itself as done, leaving the VM in a half-provisioned state.
 

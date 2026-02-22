@@ -150,10 +150,15 @@ impl super::Backend for LibvirtBackend {
         let ctrl_c = tokio::signal::ctrl_c();
         tokio::pin!(ctrl_c);
         let vm_started = std::sync::atomic::AtomicBool::new(false);
+        let ctrl_c_pressed = std::sync::atomic::AtomicBool::new(false);
+        let first_boot = std::sync::atomic::AtomicBool::new(false);
 
         let result: Result<(), RumError> = tokio::select! {
             biased;
-            _ = &mut ctrl_c => Ok(()),
+            _ = &mut ctrl_c => {
+                ctrl_c_pressed.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            },
             result = async {
 
         // 1. Ensure base image
@@ -283,6 +288,7 @@ impl super::Backend for LibvirtBackend {
         })?;
 
         let just_started = !is_running(&dom);
+        first_boot.store(just_started, std::sync::atomic::Ordering::SeqCst);
         if just_started {
             progress
                 .run("Starting VM...", |_step| async {
@@ -379,7 +385,9 @@ impl super::Backend for LibvirtBackend {
 
         // Wait for Ctrl+C or external domain stop
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {},
+            _ = tokio::signal::ctrl_c() => {
+                ctrl_c_pressed.store(true, std::sync::atomic::Ordering::SeqCst);
+            },
             _ = poll_domain_state(&uri, &vm_name_owned) => {},
         };
 
@@ -399,13 +407,35 @@ impl super::Backend for LibvirtBackend {
         };
 
         // Unified shutdown after select
+        let was_ctrl_c = ctrl_c_pressed.load(std::sync::atomic::Ordering::SeqCst);
+        let was_first_boot = first_boot.load(std::sync::atomic::Ordering::SeqCst);
+
         if vm_started.load(std::sync::atomic::Ordering::SeqCst) {
             let conn = connect(sys_config)?;
             let still_running = Domain::lookup_by_name(&conn, vm_name)
                 .ok()
                 .is_some_and(|d| is_running(&d));
 
-            if still_running {
+            if was_ctrl_c && was_first_boot {
+                // First boot interrupted — destroy VM and wipe artifacts for a clean restart
+                progress
+                    .run("Destroying interrupted first boot...", |_step| async {
+                        if let Ok(dom) = Domain::lookup_by_name(&conn, vm_name) {
+                            if is_running(&dom) {
+                                let _ = dom.destroy();
+                            }
+                            let _ = dom.undefine();
+                        }
+                        if work.exists() {
+                            let _ = tokio::fs::remove_dir_all(&work).await;
+                        }
+                        Ok::<_, RumError>(())
+                    })
+                    .await?;
+                progress.println(
+                    "First boot interrupted — VM state destroyed. Run `rum up` again for a clean start.",
+                );
+            } else if still_running {
                 progress
                     .run("Shutting down VM...", |_step| async {
                         let dom = Domain::lookup_by_name(&conn, vm_name).unwrap();
