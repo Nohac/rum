@@ -90,6 +90,9 @@ pub enum Command {
         #[command(subcommand)]
         action: ImageCommand,
     },
+
+    /// Print AI agent skill document (rum.toml schema, commands, workflows)
+    Skill,
 }
 
 #[derive(Subcommand, Debug)]

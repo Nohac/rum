@@ -57,6 +57,12 @@ async fn main() -> miette::Result<()> {
         return rum::init::run(defaults).map_err(Into::into);
     }
 
+    // Handle skill before loading config — it doesn't need rum.toml
+    if matches!(cli.command, Command::Skill) {
+        print!("{}", rum::skill::SKILL_DOC);
+        return Ok(());
+    }
+
     // Clone config path before moving cli.command — Search needs it
     let config_path = cli.config.clone();
 
@@ -89,7 +95,7 @@ async fn main() -> miette::Result<()> {
     let backend = backend::create_backend();
 
     match cli.command {
-        Command::Init { .. } | Command::Image { .. } => unreachable!(),
+        Command::Init { .. } | Command::Image { .. } | Command::Skill => unreachable!(),
         Command::Up { reset } => backend.up(&sys_config, reset, mode).await?,
         Command::Down => backend.down(&sys_config).await?,
         Command::Destroy { purge } => backend.destroy(&sys_config, purge).await?,

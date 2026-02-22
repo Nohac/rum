@@ -18,4 +18,5 @@ pub mod watch;
 pub mod init;
 pub mod qcow2;
 pub mod registry;
+pub mod skill;
 pub mod util;

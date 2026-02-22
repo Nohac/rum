@@ -1,6 +1,6 @@
 # rum skill command: generate agent-friendly docs for LLM tooling
 
-**ID:** 2c3b8726 | **Status:** Open | **Created:** 2026-02-21T14:11:35+01:00
+**ID:** 2c3b8726 | **Status:** Done | **Created:** 2026-02-21T14:11:35+01:00
 
 A command that outputs (or installs) a concise reference document that AI coding agents can use to create `rum.toml` configs and manage rum VMs.
 
