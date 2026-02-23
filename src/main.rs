@@ -20,7 +20,7 @@ async fn main() -> miette::Result<()> {
         OutputMode::Quiet
     } else if cli.verbose {
         OutputMode::Verbose
-    } else if !std::io::stdout().is_terminal() {
+    } else if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
         OutputMode::Plain
     } else {
         OutputMode::Normal

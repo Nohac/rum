@@ -312,6 +312,20 @@ fn init_defaults_refuses_overwrite() {
 }
 
 #[test]
+fn init_interactive_requires_tty() {
+    // `cargo test` runs with piped stdin — rum init without --defaults should
+    // detect non-TTY and error with a helpful message.
+    let dir = tempfile::tempdir().unwrap();
+
+    rum()
+        .arg("init")
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires a terminal"));
+}
+
+#[test]
 fn init_help_shows_defaults_flag() {
     rum()
         .args(["init", "--help"])
