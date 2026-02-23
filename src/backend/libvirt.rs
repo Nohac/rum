@@ -147,17 +147,24 @@ impl super::Backend for LibvirtBackend {
         let mut progress = StepProgress::new(total_steps, mode);
         let mut provision_error: Option<RumError> = None;
 
+        use std::cell::Cell;
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum UpPhase {
+            Preparing,  // steps 1-4: nothing started — just exit
+            NotReady,   // steps 5-7: VM started, not fully provisioned — destroy+wipe
+            Ready,      // step 8: fully provisioned or already running — ACPI shutdown
+            Detached,   // daemon spawned — exit immediately
+        }
+
+        let phase = Cell::new(UpPhase::Preparing);
+
         let ctrl_c = tokio::signal::ctrl_c();
         tokio::pin!(ctrl_c);
-        let vm_started = std::sync::atomic::AtomicBool::new(false);
-        let ctrl_c_pressed = std::sync::atomic::AtomicBool::new(false);
-        let first_boot = std::sync::atomic::AtomicBool::new(false);
-        let detached = std::sync::atomic::AtomicBool::new(false);
 
         let result: Result<(), RumError> = tokio::select! {
             biased;
             _ = &mut ctrl_c => {
-                ctrl_c_pressed.store(true, std::sync::atomic::Ordering::SeqCst);
                 Ok(())
             },
             result = async {
@@ -295,9 +302,7 @@ impl super::Backend for LibvirtBackend {
             hint: "domain should have been defined above".into(),
         })?;
 
-        let just_started = !is_running(&dom);
-        first_boot.store(just_started, std::sync::atomic::Ordering::SeqCst);
-        if just_started {
+        if !is_running(&dom) {
             progress
                 .run("Starting VM...", |_step| async {
                     dom.create().map_err(|e| RumError::Libvirt {
@@ -308,12 +313,12 @@ impl super::Backend for LibvirtBackend {
                     Ok::<_, RumError>(())
                 })
                 .await?;
+            phase.set(UpPhase::NotReady);
         } else {
             progress.skip("VM already running");
             tracing::info!(vm_name, "VM already running");
+            phase.set(UpPhase::Ready);
         }
-
-        vm_started.store(true, std::sync::atomic::Ordering::SeqCst);
 
         let uri = sys_config.libvirt_uri().to_string();
         let vm_name_owned = vm_name.to_string();
@@ -335,7 +340,7 @@ impl super::Backend for LibvirtBackend {
 
         // 7. Run provisioning scripts via agent
         let logs = paths::logs_dir(id, name_opt);
-        if just_started && let Some(ref agent) = agent_client && !provision_scripts.is_empty() {
+        if phase.get() == UpPhase::NotReady && let Some(ref agent) = agent_client && !provision_scripts.is_empty() {
             if let Err(e) = crate::agent::run_provision(agent, provision_scripts, &mut progress, &logs).await {
                 provision_error = Some(e);
             }
@@ -345,13 +350,17 @@ impl super::Backend for LibvirtBackend {
             }
         }
 
+        if phase.get() == UpPhase::NotReady {
+            phase.set(UpPhase::Ready);
+        }
+
         // Detach: spawn daemon for background services and exit early
         if detach {
             if !crate::daemon::is_daemon_running(sys_config) {
                 crate::daemon::spawn_background(sys_config)?;
                 crate::daemon::wait_for_daemon_ready(sys_config).await?;
             }
-            detached.store(true, std::sync::atomic::Ordering::SeqCst);
+            phase.set(UpPhase::Detached);
             progress.skip("Ready (detached)");
             progress.println("VM is running (detached). Use `rum down` to stop.");
             return Ok(());
@@ -405,9 +414,7 @@ impl super::Backend for LibvirtBackend {
 
         // Wait for Ctrl+C or external domain stop
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                ctrl_c_pressed.store(true, std::sync::atomic::Ordering::SeqCst);
-            },
+            _ = tokio::signal::ctrl_c() => {},
             _ = poll_domain_state(&uri, &vm_name_owned) => {},
         };
 
@@ -426,22 +433,17 @@ impl super::Backend for LibvirtBackend {
             } => result,
         };
 
-        // Unified shutdown after select — skip if we detached
-        if detached.load(std::sync::atomic::Ordering::SeqCst) {
-            return result;
-        }
+        // Unified shutdown — action determined solely by phase
+        match phase.get() {
+            UpPhase::Detached => return result,
 
-        let was_ctrl_c = ctrl_c_pressed.load(std::sync::atomic::Ordering::SeqCst);
-        let was_first_boot = first_boot.load(std::sync::atomic::Ordering::SeqCst);
+            UpPhase::Preparing => {
+                progress.skip("Shutdown (not needed)");
+            }
 
-        if vm_started.load(std::sync::atomic::Ordering::SeqCst) {
-            let conn = connect(sys_config)?;
-            let still_running = Domain::lookup_by_name(&conn, vm_name)
-                .ok()
-                .is_some_and(|d| is_running(&d));
-
-            if was_ctrl_c && was_first_boot {
-                // First boot interrupted — destroy VM and wipe artifacts for a clean restart
+            UpPhase::NotReady => {
+                // First boot incomplete — destroy + wipe for clean retry
+                let conn = connect(sys_config)?;
                 progress
                     .run("Destroying interrupted first boot...", |_step| async {
                         if let Ok(dom) = Domain::lookup_by_name(&conn, vm_name) {
@@ -459,18 +461,24 @@ impl super::Backend for LibvirtBackend {
                 progress.println(
                     "First boot interrupted — VM state destroyed. Run `rum up` again for a clean start.",
                 );
-            } else if still_running {
-                progress
-                    .run("Shutting down VM...", |_step| async {
-                        let dom = Domain::lookup_by_name(&conn, vm_name).unwrap();
-                        shutdown_domain(&dom).await
-                    })
-                    .await?;
-            } else {
-                progress.skip("VM stopped externally");
             }
-        } else {
-            progress.skip("Shutdown (not needed)");
+
+            UpPhase::Ready => {
+                let conn = connect(sys_config)?;
+                let still_running = Domain::lookup_by_name(&conn, vm_name)
+                    .ok()
+                    .is_some_and(|d| is_running(&d));
+                if still_running {
+                    progress
+                        .run("Shutting down VM...", |_step| async {
+                            let dom = Domain::lookup_by_name(&conn, vm_name).unwrap();
+                            shutdown_domain(&dom).await
+                        })
+                        .await?;
+                } else {
+                    progress.skip("VM stopped externally");
+                }
+            }
         }
 
         result?;

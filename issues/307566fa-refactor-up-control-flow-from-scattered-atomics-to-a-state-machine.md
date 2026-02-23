@@ -1,6 +1,6 @@
 # Refactor up() control flow from scattered atomics to a state machine
 
-**ID:** 307566fa | **Status:** Open | **Created:** 2026-02-23T23:34:52+01:00
+**ID:** 307566fa | **Status:** Done | **Created:** 2026-02-23T23:34:52+01:00
 
 ## Problem
 
