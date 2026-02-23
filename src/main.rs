@@ -57,6 +57,13 @@ async fn main() -> miette::Result<()> {
         return rum::init::run(defaults).map_err(Into::into);
     }
 
+    // Handle serve before normal config loading — daemon mode
+    if matches!(cli.command, Command::Serve) {
+        let sys_config = config::load_config(&cli.config)?;
+        rum::daemon::run_serve(&sys_config).await?;
+        return Ok(());
+    }
+
     // Handle skill before loading config — it doesn't need rum.toml
     if matches!(cli.command, Command::Skill) {
         print!("{}", rum::skill::SKILL_DOC);
@@ -95,13 +102,62 @@ async fn main() -> miette::Result<()> {
     let backend = backend::create_backend();
 
     match cli.command {
-        Command::Init { .. } | Command::Image { .. } | Command::Skill => unreachable!(),
-        Command::Up { reset } => backend.up(&sys_config, reset, mode).await?,
-        Command::Down => backend.down(&sys_config).await?,
-        Command::Destroy { purge } => backend.destroy(&sys_config, purge).await?,
-        Command::Status => backend.status(&sys_config).await?,
+        Command::Init { .. } | Command::Image { .. } | Command::Skill | Command::Serve => {
+            unreachable!()
+        }
+        Command::Up { reset, detach } => {
+            let effective_detach = detach || mode == OutputMode::Plain;
+            backend
+                .up(&sys_config, reset, effective_detach, mode)
+                .await?
+        }
+        Command::Down => {
+            let client = rum::daemon::resolve(&sys_config);
+            let msg = client
+                .shutdown()
+                .await
+                .map_err(|e| rum::error::RumError::Daemon {
+                    message: e.to_string(),
+                })?;
+            println!("{msg}");
+        }
+        Command::Destroy { purge } => {
+            // Stop VM + daemon via roam
+            let client = rum::daemon::resolve(&sys_config);
+            let _ = client.force_stop().await;
+
+            // Local cleanup: undefine, network teardown, work dir removal
+            destroy_cleanup(&sys_config, purge).await?;
+        }
+        Command::Status => {
+            let client = rum::daemon::resolve(&sys_config);
+            let info = client
+                .status()
+                .await
+                .map_err(|e| rum::error::RumError::Daemon {
+                    message: e.to_string(),
+                })?;
+
+            let vm_name = sys_config.display_name();
+            println!("VM '{vm_name}': {}", info.state);
+            for ip in &info.ips {
+                println!("  IP: {ip}");
+            }
+            if info.daemon_running {
+                println!("  Daemon: running");
+            }
+        }
         Command::Ssh { args } => backend.ssh(&sys_config, &args).await?,
-        Command::SshConfig => backend.ssh_config(&sys_config).await?,
+        Command::SshConfig => {
+            let client = rum::daemon::resolve(&sys_config);
+            let config_text = client
+                .ssh_config()
+                .await
+                .map_err(|e| rum::error::RumError::Daemon {
+                    message: e.to_string(),
+                })?;
+            print!("{config_text}");
+        }
         Command::Log { failed, all, rum } => {
             handle_log_command(&logs_dir, failed, all, rum)?;
         }
@@ -131,6 +187,84 @@ async fn main() -> miette::Result<()> {
             cloudinit::generate_seed_iso(&seed_path, &seed_config).await?;
             println!("Wrote seed ISO to {}", seed_path.display());
         }
+    }
+
+    Ok(())
+}
+
+/// Local cleanup after force-stopping a VM via roam: undefine domain,
+/// tear down auto-created networks, remove work dir, optionally purge cache.
+async fn destroy_cleanup(
+    sys_config: &rum::config::SystemConfig,
+    purge: bool,
+) -> miette::Result<()> {
+    use virt::connect::Connect;
+    use virt::domain::Domain;
+    use virt::network::Network;
+
+    let id = &sys_config.id;
+    let name_opt = sys_config.name.as_deref();
+    let vm_name = sys_config.display_name();
+    let config = &sys_config.config;
+
+    virt::error::clear_error_callback();
+    let mut had_domain = false;
+    let mut had_artifacts = false;
+
+    if let Ok(mut conn) = Connect::open(Some(sys_config.libvirt_uri())) {
+        if let Ok(dom) = Domain::lookup_by_name(&conn, vm_name) {
+            had_domain = true;
+            if dom.is_active().unwrap_or(false) {
+                let _ = dom.destroy();
+            }
+            let _ = dom.undefine();
+        }
+
+        // Tear down auto-created networks
+        for iface in &config.network.interfaces {
+            let net_name = rum::network_xml::prefixed_name(id, &iface.network);
+            if let Ok(net) = Network::lookup_by_name(&conn, &net_name) {
+                if net.is_active().unwrap_or(false) {
+                    let _ = net.destroy();
+                }
+                let _ = net.undefine();
+            }
+        }
+
+        let _ = conn.close();
+    }
+
+    // Remove work dir
+    let work = rum::paths::work_dir(id, name_opt);
+    if work.exists() {
+        had_artifacts = true;
+        tokio::fs::remove_dir_all(&work)
+            .await
+            .map_err(|e| rum::error::RumError::Io {
+                context: format!("removing {}", work.display()),
+                source: e,
+            })?;
+    }
+
+    // Purge: remove cached base image
+    if purge
+        && let Some(filename) = config.image.base.rsplit('/').next()
+    {
+        let cached = rum::paths::cache_dir().join(filename);
+        if cached.exists() {
+            tokio::fs::remove_file(&cached)
+                .await
+                .map_err(|e| rum::error::RumError::Io {
+                    context: format!("removing cached image {}", cached.display()),
+                    source: e,
+                })?;
+        }
+    }
+
+    match (had_domain, had_artifacts) {
+        (true, _) => println!("VM '{vm_name}' destroyed."),
+        (false, true) => println!("Removed artifacts for '{vm_name}'."),
+        (false, false) => println!("VM '{vm_name}' not found — nothing to destroy."),
     }
 
     Ok(())

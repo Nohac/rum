@@ -54,3 +54,13 @@ pub fn config_path_file(id: &str, name: Option<&str>) -> PathBuf {
 pub fn ssh_key_path(id: &str, name: Option<&str>) -> PathBuf {
     work_dir(id, name).join("ssh_ed25519")
 }
+
+/// Path to the daemon Unix socket for a VM.
+pub fn socket_path(id: &str, name: Option<&str>) -> PathBuf {
+    work_dir(id, name).join("rum.sock")
+}
+
+/// Path to the daemon PID file for a VM.
+pub fn pid_path(id: &str, name: Option<&str>) -> PathBuf {
+    work_dir(id, name).join("rum.pid")
+}

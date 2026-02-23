@@ -79,6 +79,9 @@ pub enum RumError {
     #[diagnostic(help("run `rum log --failed` to see the full script output"))]
     ProvisionFailed { script: String },
 
+    #[error("daemon error: {message}")]
+    Daemon { message: String },
+
     #[error("failed to write config: {path}")]
     ConfigWrite {
         path: String,

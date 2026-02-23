@@ -402,6 +402,24 @@ fn skill_prints_reference() {
 }
 
 #[test]
+fn up_detach_flag_accepted() {
+    rum()
+        .args(["up", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--detach"));
+}
+
+#[test]
+fn serve_command_hidden() {
+    rum()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("serve").not());
+}
+
+#[test]
 fn config_with_ports_section() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("rum.toml");

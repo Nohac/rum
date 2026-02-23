@@ -1,4 +1,3 @@
-use indicatif::ProgressBar;
 use virt::connect::Connect;
 use virt::domain::Domain;
 use virt::error as virt_error;
@@ -12,7 +11,7 @@ use crate::{cloudinit, domain_xml, image, network_xml, overlay, paths, qcow2};
 use ssh_key::private::Ed25519Keypair;
 use ssh_key::PrivateKey;
 
-struct ConnGuard(Connect);
+pub(crate) struct ConnGuard(Connect);
 
 impl std::ops::Deref for ConnGuard {
     type Target = Connect;
@@ -34,6 +33,7 @@ impl super::Backend for LibvirtBackend {
         &self,
         sys_config: &SystemConfig,
         reset: bool,
+        detach: bool,
         mode: OutputMode,
     ) -> Result<(), RumError> {
         let id = &sys_config.id;
@@ -152,6 +152,7 @@ impl super::Backend for LibvirtBackend {
         let vm_started = std::sync::atomic::AtomicBool::new(false);
         let ctrl_c_pressed = std::sync::atomic::AtomicBool::new(false);
         let first_boot = std::sync::atomic::AtomicBool::new(false);
+        let detached = std::sync::atomic::AtomicBool::new(false);
 
         let result: Result<(), RumError> = tokio::select! {
             biased;
@@ -344,6 +345,18 @@ impl super::Backend for LibvirtBackend {
             }
         }
 
+        // Detach: spawn daemon for background services and exit early
+        if detach {
+            if !crate::daemon::is_daemon_running(sys_config) {
+                crate::daemon::spawn_background(sys_config)?;
+                crate::daemon::wait_for_daemon_ready(sys_config).await?;
+            }
+            detached.store(true, std::sync::atomic::Ordering::SeqCst);
+            progress.skip("Ready (detached)");
+            progress.println("VM is running (detached). Use `rum down` to stop.");
+            return Ok(());
+        }
+
         // 8. Ready — start log subscription + port forwards
         let log_handle = agent_client
             .as_ref()
@@ -413,7 +426,11 @@ impl super::Backend for LibvirtBackend {
             } => result,
         };
 
-        // Unified shutdown after select
+        // Unified shutdown after select — skip if we detached
+        if detached.load(std::sync::atomic::Ordering::SeqCst) {
+            return result;
+        }
+
         let was_ctrl_c = ctrl_c_pressed.load(std::sync::atomic::Ordering::SeqCst);
         let was_first_boot = first_boot.load(std::sync::atomic::Ordering::SeqCst);
 
@@ -460,168 +477,6 @@ impl super::Backend for LibvirtBackend {
 
         if let Some(e) = provision_error {
             return Err(e);
-        }
-
-        Ok(())
-    }
-
-    async fn down(&self, sys_config: &SystemConfig) -> Result<(), RumError> {
-        let vm_name = sys_config.display_name();
-        let conn = connect(sys_config)?;
-
-        match Domain::lookup_by_name(&conn, vm_name) {
-            Ok(dom) => {
-                if !is_running(&dom) {
-                    println!("VM '{vm_name}' is not running.");
-                    return Ok(());
-                }
-
-                // ACPI shutdown
-                tracing::info!(vm_name, "sending ACPI shutdown");
-                dom.shutdown().map_err(|e| RumError::Libvirt {
-                    message: format!("shutdown failed: {e}"),
-                    hint: "VM may not have ACPI support".into(),
-                })?;
-
-                // Wait up to 30s for shutdown
-                let spinner = ProgressBar::new_spinner();
-                spinner.set_message(format!("Waiting for VM '{vm_name}' to shut down..."));
-                spinner.enable_steady_tick(std::time::Duration::from_millis(120));
-                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-                loop {
-                    if !is_running(&dom) {
-                        spinner.finish_with_message(format!("VM '{vm_name}' stopped."));
-                        return Ok(());
-                    }
-                    if tokio::time::Instant::now() >= deadline {
-                        spinner.finish_and_clear();
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    spinner.tick();
-                }
-
-                // Force stop
-                tracing::warn!(vm_name, "ACPI shutdown timed out, force stopping");
-                dom.destroy().map_err(|e| RumError::Libvirt {
-                    message: format!("force stop failed: {e}"),
-                    hint: "check libvirt permissions".into(),
-                })?;
-                println!("VM '{vm_name}' force stopped.");
-            }
-            Err(_) => {
-                println!("VM '{vm_name}' is not defined.");
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn destroy(&self, sys_config: &SystemConfig, purge: bool) -> Result<(), RumError> {
-        let id = &sys_config.id;
-        let name_opt = sys_config.name.as_deref();
-        let vm_name = sys_config.display_name();
-        let config = &sys_config.config;
-        let conn = connect(sys_config)?;
-
-        let mut had_domain = false;
-        let mut had_artifacts = false;
-
-        if let Ok(dom) = Domain::lookup_by_name(&conn, vm_name) {
-            had_domain = true;
-            if is_running(&dom) {
-                tracing::info!(vm_name, "stopping VM before destroy");
-                let _ = dom.destroy();
-            }
-            dom.undefine().map_err(|e| RumError::Libvirt {
-                message: format!("failed to undefine domain: {e}"),
-                hint: "check libvirt permissions".into(),
-            })?;
-            tracing::info!(vm_name, "domain undefined");
-        }
-
-        // Tear down auto-created networks (derived from id + interface names)
-        for iface in &config.network.interfaces {
-            let net_name = network_xml::prefixed_name(id, &iface.network);
-            if let Ok(net) = Network::lookup_by_name(&conn, &net_name) {
-                if net.is_active().unwrap_or(false) {
-                    let _ = net.destroy();
-                }
-                let _ = net.undefine();
-                tracing::info!(net_name, "removed network");
-            }
-        }
-
-        // Remove work dir
-        let work = paths::work_dir(id, name_opt);
-        if work.exists() {
-            had_artifacts = true;
-            tokio::fs::remove_dir_all(&work)
-                .await
-                .map_err(|e| RumError::Io {
-                    context: format!("removing {}", work.display()),
-                    source: e,
-                })?;
-            tracing::info!(path = %work.display(), "removed work directory");
-        }
-
-        // Purge: remove cached base image
-        if purge && let Some(filename) = config.image.base.rsplit('/').next() {
-            let cached = paths::cache_dir().join(filename);
-            if cached.exists() {
-                tokio::fs::remove_file(&cached)
-                    .await
-                    .map_err(|e| RumError::Io {
-                        context: format!("removing cached image {}", cached.display()),
-                        source: e,
-                    })?;
-                tracing::info!(path = %cached.display(), "removed cached base image");
-            }
-        }
-
-        match (had_domain, had_artifacts) {
-            (true, _) => println!("VM '{vm_name}' destroyed."),
-            (false, true) => println!("Removed artifacts for '{vm_name}'."),
-            (false, false) => println!("VM '{vm_name}' not found — nothing to destroy."),
-        }
-
-        Ok(())
-    }
-
-    async fn status(&self, sys_config: &SystemConfig) -> Result<(), RumError> {
-        let vm_name = sys_config.display_name();
-        let conn = connect(sys_config)?;
-
-        match Domain::lookup_by_name(&conn, vm_name) {
-            Ok(dom) => {
-                let state = if is_running(&dom) {
-                    "running"
-                } else {
-                    "stopped"
-                };
-                println!("VM '{vm_name}': {state}");
-
-                if is_running(&dom) {
-                    // Try to get IP from DHCP leases
-                    match dom
-                        .interface_addresses(virt::sys::VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE, 0)
-                    {
-                        Ok(ifaces) => {
-                            for iface in &ifaces {
-                                for addr in &iface.addrs {
-                                    println!("  IP: {}", addr.addr);
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            println!("  IP: unknown (DHCP lease not yet available)");
-                        }
-                    }
-                }
-            }
-            Err(_) => {
-                println!("VM '{vm_name}': not defined");
-            }
         }
 
         Ok(())
@@ -693,41 +548,6 @@ impl super::Backend for LibvirtBackend {
         })
     }
 
-    async fn ssh_config(&self, sys_config: &SystemConfig) -> Result<(), RumError> {
-        let vm_name = sys_config.display_name();
-        let id = &sys_config.id;
-        let name_opt = sys_config.name.as_deref();
-        let conn = connect(sys_config)?;
-
-        let dom = Domain::lookup_by_name(&conn, vm_name).map_err(|_| RumError::SshNotReady {
-            name: vm_name.to_string(),
-            reason: "VM is not defined".into(),
-        })?;
-
-        if !is_running(&dom) {
-            return Err(RumError::SshNotReady {
-                name: vm_name.to_string(),
-                reason: "VM is not running".into(),
-            });
-        }
-
-        let ip = get_vm_ip(&dom, sys_config)?;
-        let ssh_key_path = paths::ssh_key_path(id, name_opt);
-
-        println!(
-            "Host {vm_name}\n  \
-             HostName {ip}\n  \
-             User {user}\n  \
-             IdentityFile {key}\n  \
-             StrictHostKeyChecking no\n  \
-             UserKnownHostsFile /dev/null\n  \
-             LogLevel ERROR",
-            user = sys_config.config.ssh.user,
-            key = ssh_key_path.display(),
-        );
-
-        Ok(())
-    }
 }
 
 /// Look up the vsock CID for a running VM.
@@ -895,7 +715,7 @@ async fn collect_ssh_keys(
 }
 
 
-fn connect(sys_config: &SystemConfig) -> Result<ConnGuard, RumError> {
+pub(crate) fn connect(sys_config: &SystemConfig) -> Result<ConnGuard, RumError> {
     // Suppress libvirt's default error handler that prints to stderr.
     // This installs a no-op callback so errors are only surfaced through
     // Rust's Result types, not printed to stderr by the C library.
@@ -1025,11 +845,11 @@ fn add_dhcp_reservation(
     Ok(())
 }
 
-fn is_running(dom: &Domain) -> bool {
+pub(crate) fn is_running(dom: &Domain) -> bool {
     dom.is_active().unwrap_or(false)
 }
 
-async fn shutdown_domain(dom: &Domain) -> Result<(), RumError> {
+pub(crate) async fn shutdown_domain(dom: &Domain) -> Result<(), RumError> {
     if !is_running(dom) {
         return Ok(());
     }
@@ -1081,7 +901,7 @@ fn parse_vsock_cid(dom: &Domain) -> Option<u32> {
 
 /// Poll domain state until it's no longer running.
 /// Used to detect external `rum down` or `rum destroy`.
-async fn poll_domain_state(uri: &str, vm_name: &str) {
+pub(crate) async fn poll_domain_state(uri: &str, vm_name: &str) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         // Open a fresh connection for each check to avoid stale state

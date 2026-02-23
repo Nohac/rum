@@ -27,6 +27,9 @@ pub enum Command {
         /// Wipe overlay + seed to force fresh first boot
         #[arg(long)]
         reset: bool,
+        /// Start in detached mode (exit after provisioning, run services in background)
+        #[arg(short, long)]
+        detach: bool,
     },
 
     /// Stop the VM
@@ -93,6 +96,10 @@ pub enum Command {
 
     /// Print AI agent skill document (rum.toml schema, commands, workflows)
     Skill,
+
+    /// Run as background daemon (internal — used by `rum up -d`)
+    #[command(hide = true)]
+    Serve,
 }
 
 #[derive(Subcommand, Debug)]

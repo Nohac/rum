@@ -5,6 +5,7 @@ pub mod backend;
 pub mod cli;
 pub mod cloudinit;
 pub mod config;
+pub mod daemon;
 pub mod domain_xml;
 pub mod error;
 pub mod image;
