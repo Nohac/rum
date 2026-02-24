@@ -1,6 +1,6 @@
 # Consolidate progress steps into user-friendly messages
 
-**ID:** 60d8296d | **Status:** Open | **Created:** 2026-02-23T23:31:52+01:00
+**ID:** 60d8296d | **Status:** Done | **Created:** 2026-02-23T23:31:52+01:00
 
 Current `rum up` output has too many internal-detail steps that aren't useful to the user:
 

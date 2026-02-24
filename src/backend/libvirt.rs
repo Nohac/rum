@@ -135,16 +135,13 @@ impl super::Backend for LibvirtBackend {
             });
         }
 
-        // Compute step count: 7 base + one per provisioning script
+        // Compute step count: 4 base + one per provisioning script
         //   1. base image
-        //   2. overlay + drives
-        //   3. cloud-init seed
-        //   4. domain config + network
-        //   5. start VM
-        //   6. wait for agent
+        //   2. preparing VM (overlay + drives + cloud-init seed + domain config + network)
+        //   3. booting VM (start + wait for agent)
         //   per-script: drives/fs, system provision, boot provision
         //   last. ready
-        let total_steps = 8 + provision_scripts.len();
+        let total_steps = 4 + provision_scripts.len();
         let mut progress = StepProgress::new(total_steps, mode);
         let mut provision_error: Option<RumError> = None;
 
@@ -152,9 +149,9 @@ impl super::Backend for LibvirtBackend {
 
         #[derive(Clone, Copy, PartialEq, Eq)]
         enum UpPhase {
-            Preparing,  // steps 1-4: nothing started — just exit
-            NotReady,   // steps 5-7: VM started, not fully provisioned — destroy+wipe
-            Ready,      // step 8: fully provisioned or already running — ACPI shutdown
+            Preparing,  // steps 1-2: nothing started — just exit
+            NotReady,   // step 3+provisioning: VM started, not fully provisioned — destroy+wipe
+            Ready,      // last step: fully provisioned or already running — ACPI shutdown
             Detached,   // daemon spawned — exit immediately
         }
 
@@ -188,11 +185,27 @@ impl super::Backend for LibvirtBackend {
                 .await?
         };
 
-        // 2. Create overlay + extra drives
+        // 2. Prepare VM (overlay + drives + cloud-init seed + domain config + network)
         let disk_size = crate::util::parse_size(&config.resources.disk)?;
-        if !overlay_path.exists() || drives.iter().any(|d| !d.path.exists()) {
+        let overlay_cached = overlay_path.exists() && drives.iter().all(|d| d.path.exists());
+        let seed_cached = seed_path.exists();
+        let domain_exists = Domain::lookup_by_name(&conn, vm_name).is_ok();
+        let domain_changed = domain_exists
+            && domain_xml::xml_has_changed(
+                sys_config,
+                &overlay_path,
+                &seed_path,
+                &mounts,
+                &drives,
+                &xml_path,
+            );
+
+        if overlay_cached && seed_cached && domain_exists && !domain_changed {
+            progress.skip("VM prepared");
+        } else {
             progress
-                .run("Creating disk overlay...", |_step| async {
+                .run("Preparing VM...", |_step| async {
+                    // Create overlay + extra drives
                     if !overlay_path.exists() {
                         overlay::create_overlay(&base, &overlay_path, Some(disk_size)).await?;
                     }
@@ -201,117 +214,116 @@ impl super::Backend for LibvirtBackend {
                             qcow2::create_qcow2(&d.path, &d.size)?;
                         }
                     }
-                    Ok::<_, RumError>(())
-                })
-                .await?;
-        } else {
-            progress.skip("Disk overlay ready");
-        }
 
-        // 3. Generate seed ISO if inputs changed
-        if !seed_path.exists() {
-            progress
-                .run("Generating cloud-init seed...", |_step| async {
-                    // Remove old seed ISOs with different hashes
-                    if let Ok(mut entries) = tokio::fs::read_dir(&work).await {
-                        while let Ok(Some(entry)) = entries.next_entry().await {
-                            let fname = entry.file_name();
-                            if let Some(s) = fname.to_str()
-                                && s.starts_with("seed-")
-                                && s.ends_with(".iso")
-                            {
-                                let _ = tokio::fs::remove_file(entry.path()).await;
+                    // Generate seed ISO if inputs changed
+                    if !seed_path.exists() {
+                        // Remove old seed ISOs with different hashes
+                        if let Ok(mut entries) = tokio::fs::read_dir(&work).await {
+                            while let Ok(Some(entry)) = entries.next_entry().await {
+                                let fname = entry.file_name();
+                                if let Some(s) = fname.to_str()
+                                    && s.starts_with("seed-")
+                                    && s.ends_with(".iso")
+                                {
+                                    let _ = tokio::fs::remove_file(entry.path()).await;
+                                }
                             }
                         }
+                        cloudinit::generate_seed_iso(&seed_path, &seed_config).await?;
                     }
-                    cloudinit::generate_seed_iso(&seed_path, &seed_config).await
-                })
-                .await?;
-        } else {
-            progress.skip("Cloud-init seed ready");
-        }
 
-        // 4. Configure domain + network
-        progress
-            .run("Configuring domain...", |_step| async {
-                let xml = domain_xml::generate_domain_xml(
-                    sys_config,
-                    &overlay_path,
-                    &seed_path,
-                    &mounts,
-                    &drives,
-                );
+                    // Configure domain + network
+                    let xml = domain_xml::generate_domain_xml(
+                        sys_config,
+                        &overlay_path,
+                        &seed_path,
+                        &mounts,
+                        &drives,
+                    );
 
-                let existing = Domain::lookup_by_name(&conn, vm_name);
-                match existing {
-                    Ok(dom) => {
-                        if domain_xml::xml_has_changed(
-                            sys_config,
-                            &overlay_path,
-                            &seed_path,
-                            &mounts,
-                            &drives,
-                            &xml_path,
-                        ) {
-                            if is_running(&dom) {
-                                return Err(RumError::RequiresRestart {
-                                    name: vm_name.to_string(),
-                                });
+                    let existing = Domain::lookup_by_name(&conn, vm_name);
+                    match existing {
+                        Ok(dom) => {
+                            if domain_xml::xml_has_changed(
+                                sys_config,
+                                &overlay_path,
+                                &seed_path,
+                                &mounts,
+                                &drives,
+                                &xml_path,
+                            ) {
+                                if is_running(&dom) {
+                                    return Err(RumError::RequiresRestart {
+                                        name: vm_name.to_string(),
+                                    });
+                                }
+                                dom.undefine().map_err(|e| RumError::Libvirt {
+                                    message: format!("failed to undefine domain: {e}"),
+                                    hint: "check libvirt permissions".into(),
+                                })?;
+                                define_domain(&conn, &xml)?;
+                                tracing::info!(vm_name, "domain redefined with updated config");
                             }
-                            dom.undefine().map_err(|e| RumError::Libvirt {
-                                message: format!("failed to undefine domain: {e}"),
-                                hint: "check libvirt permissions".into(),
-                            })?;
+                        }
+                        Err(_) => {
                             define_domain(&conn, &xml)?;
-                            tracing::info!(vm_name, "domain redefined with updated config");
+                            tracing::info!(vm_name, "domain defined");
                         }
                     }
-                    Err(_) => {
-                        define_domain(&conn, &xml)?;
-                        tracing::info!(vm_name, "domain defined");
-                    }
-                }
 
-                // Save XML for future change detection
-                tokio::fs::write(&xml_path, &xml)
+                    // Save XML for future change detection
+                    tokio::fs::write(&xml_path, &xml)
+                        .await
+                        .map_err(|e| RumError::Io {
+                            context: format!("saving domain XML to {}", xml_path.display()),
+                            source: e,
+                        })?;
+
+                    // Write config_path file for stale state detection
+                    let cp_file = paths::config_path_file(id, name_opt);
+                    tokio::fs::write(
+                        &cp_file,
+                        sys_config.config_path.to_string_lossy().as_bytes(),
+                    )
                     .await
                     .map_err(|e| RumError::Io {
-                        context: format!("saving domain XML to {}", xml_path.display()),
+                        context: format!("saving config path to {}", cp_file.display()),
                         source: e,
                     })?;
 
-                // Write config_path file for stale state detection
-                let cp_file = paths::config_path_file(id, name_opt);
-                tokio::fs::write(
-                    &cp_file,
-                    sys_config.config_path.to_string_lossy().as_bytes(),
-                )
-                .await
-                .map_err(|e| RumError::Io {
-                    context: format!("saving config path to {}", cp_file.display()),
-                    source: e,
-                })?;
+                    ensure_networks(&conn, sys_config)?;
+                    Ok(())
+                })
+                .await?;
+        }
 
-                ensure_networks(&conn, sys_config)?;
-                Ok(())
-            })
-            .await?;
-
-        // 5. Start VM
+        // 3. Boot VM (start + wait for agent)
         let dom = Domain::lookup_by_name(&conn, vm_name).map_err(|e| RumError::Libvirt {
             message: format!("domain lookup failed: {e}"),
             hint: "domain should have been defined above".into(),
         })?;
 
-        if !is_running(&dom) {
-            progress
-                .run("Starting VM...", |_step| async {
+        let uri = sys_config.libvirt_uri().to_string();
+        let vm_name_owned = vm_name.to_string();
+
+        let agent_client = if !is_running(&dom) {
+            let client = progress
+                .run("Booting VM...", |_step| async {
                     dom.create().map_err(|e| RumError::Libvirt {
                         message: format!("failed to start domain: {e}"),
                         hint: "check `virsh -c qemu:///system start` for details".into(),
                     })?;
                     tracing::info!(vm_name, "VM started");
-                    Ok::<_, RumError>(())
+
+                    // Wait for agent readiness over vsock
+                    let vsock_cid = parse_vsock_cid(&dom);
+                    if let Some(cid) = vsock_cid {
+                        let client = crate::agent::wait_for_agent(cid).await?;
+                        Ok::<_, RumError>(Some(client))
+                    } else {
+                        tracing::warn!("could not determine vsock CID from live XML");
+                        Ok(None)
+                    }
                 })
                 .await?;
             if was_previously_provisioned {
@@ -319,31 +331,25 @@ impl super::Backend for LibvirtBackend {
             } else {
                 phase.set(UpPhase::NotReady);
             }
+            client
         } else {
             progress.skip("VM already running");
             tracing::info!(vm_name, "VM already running");
             phase.set(UpPhase::Ready);
-        }
 
-        let uri = sys_config.libvirt_uri().to_string();
-        let vm_name_owned = vm_name.to_string();
-
-        // 6. Wait for agent readiness over vsock
-        let vsock_cid = parse_vsock_cid(&dom);
-        let agent_client = if let Some(cid) = vsock_cid {
-            let client = progress
-                .run("Waiting for agent...", |_step| async {
-                    crate::agent::wait_for_agent(cid).await
-                })
-                .await?;
-            Some(client)
-        } else {
-            progress.skip("Agent not available");
-            tracing::warn!("could not determine vsock CID from live XML");
-            None
+            // Still try to connect to agent for already-running VMs
+            let vsock_cid = parse_vsock_cid(&dom);
+            if let Some(cid) = vsock_cid {
+                crate::agent::wait_for_agent(cid).await.ok()
+            } else {
+                None
+            }
         };
 
-        // 7. Run provisioning scripts via agent
+        // Resolve vsock CID from the (now-running) domain for port forwards
+        let vsock_cid = parse_vsock_cid(&dom);
+
+        // Per-script provisioning via agent
         let logs = paths::logs_dir(id, name_opt);
         let marker = paths::provisioned_marker(id, name_opt);
         let previously_provisioned = marker.exists();
@@ -388,7 +394,7 @@ impl super::Backend for LibvirtBackend {
             return Ok(());
         }
 
-        // 8. Ready — start log subscription + port forwards
+        // Ready — start log subscription + port forwards
         let log_handle = agent_client
             .as_ref()
             .map(crate::agent::start_log_subscription);
