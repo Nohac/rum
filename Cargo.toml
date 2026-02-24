@@ -29,7 +29,6 @@ inquire = "0.7"
 ssh-key = { version = "0.6", features = ["ed25519", "rand_core", "getrandom"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 notify = "8"
-base64 = "0.22"
 russh = "0.57.0"
 rum-agent = { path = "rum-agent", artifact = "bin", lib = true, target = "x86_64-unknown-linux-musl" }
 tokio-vsock = "0.7"

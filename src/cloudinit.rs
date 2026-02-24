@@ -67,7 +67,7 @@ pub async fn generate_seed_iso(
     let network_config =
         "version: 2\nethernets:\n  id0:\n    match:\n      name: \"en*\"\n    dhcp4: true\n";
 
-    let iso_files = vec![
+    let mut iso_files = vec![
         IsoFile {
             name: "meta-data",
             data: meta_data.as_bytes(),
@@ -81,6 +81,13 @@ pub async fn generate_seed_iso(
             data: network_config.as_bytes(),
         },
     ];
+
+    if let Some(agent) = config.agent_binary {
+        iso_files.push(IsoFile {
+            name: "rum-agent",
+            data: agent,
+        });
+    }
 
     let iso = iso9660::build_iso("CIDATA", &iso_files);
 
@@ -134,15 +141,7 @@ fn build_user_data(config: &SeedConfig) -> String {
 
     let mut write_files = VArray::new();
 
-    if let Some(agent) = agent_binary {
-        use base64::Engine;
-        let b64 = base64::engine::general_purpose::STANDARD.encode(agent);
-        write_files.push(value!({
-            "path": "/usr/local/bin/rum-agent",
-            "permissions": "0755",
-            "encoding": "b64",
-            "content": (b64.as_str()),
-        }));
+    if agent_binary.is_some() {
         write_files.push(value!({
             "path": "/etc/systemd/system/rum-agent.service",
             "content": (crate::agent::AGENT_SERVICE),
@@ -177,6 +176,11 @@ fn build_user_data(config: &SeedConfig) -> String {
     }
 
     if agent_binary.is_some() {
+        runcmd.push(value!(["mkdir", "-p", "/mnt/cidata"]));
+        runcmd.push(value!(["mount", "-L", "CIDATA", "/mnt/cidata"]));
+        runcmd.push(value!(["install", "-m", "755", "/mnt/cidata/rum-agent", "/usr/local/bin/rum-agent"]));
+        runcmd.push(value!(["umount", "/mnt/cidata"]));
+        runcmd.push(value!(["rmdir", "/mnt/cidata"]));
         runcmd.push(value!(["systemctl", "daemon-reload"]));
         runcmd.push(value!(["systemctl", "enable", "--now", "rum-agent.service"]));
     }
