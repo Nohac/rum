@@ -115,7 +115,7 @@ Filesystem provisioning on drives. Type is `ext4`, `xfs`, `zfs`, `btrfs`, etc.
 ```
 rum up [--reset] [-d]     Create/start VM. --reset forces fresh boot. -d detaches after provisioning.
 rum down                  Graceful ACPI shutdown (via daemon).
-rum destroy [--purge]     Force-stop VM + daemon, undefine domain, remove artifacts. --purge removes cached image.
+rum destroy               Force-stop VM + daemon, undefine domain, remove artifacts.
 rum status                Show VM state, IP addresses, and daemon status.
 rum exec <command>        Run a command inside the VM via vsock agent. Streams stdout/stderr, returns exit code.
 rum ssh [args...]         SSH into VM (passes extra args to ssh).
@@ -164,7 +164,7 @@ A **vsock agent** binary is embedded in rum and deployed into the VM at first bo
 `rum ssh` or `rum ssh -- -L 8080:localhost:80` (with port forwarding)
 
 **Tear down completely:**
-`rum destroy --purge` — force-stops VM and daemon, removes domain, artifacts, and cached base image
+`rum destroy` — force-stops VM and daemon, removes domain and artifacts. Use `rum image delete` to manage cached images separately.
 
 **Named configs (multiple VMs in one directory):**
 Name the file `dev.rum.toml` — the VM gets name "dev". Use `rum -c dev.rum.toml up`.

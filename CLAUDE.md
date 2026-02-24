@@ -63,7 +63,7 @@ Rust 2024 edition. Code is split into focused modules — avoid monolithic files
 - **`src/iso9660.rs`** — Minimal pure-Rust ISO 9660 generator with Rock Ridge extensions (SUSP/RRIP). Supports flat file layout only — exactly what cloud-init seed images need.
 - **`src/domain_xml.rs`** — Libvirt domain XML generation from config (KVM, virtio disk, SATA CDROM, NAT network, serial console)
 - **`src/backend/mod.rs`** — `Backend` trait with async methods (up, down, destroy, status)
-- **`src/backend/libvirt.rs`** — Full libvirt implementation: image download, overlay/seed creation, domain define/redefine/start, serial console via `virsh console`, ACPI shutdown with timeout, destroy with purge, auto-starts default network if inactive
+- **`src/backend/libvirt.rs`** — Full libvirt implementation: image download, overlay/seed creation, domain define/redefine/start, serial console via `virsh console`, ACPI shutdown with timeout, destroy, auto-starts default network if inactive
 - **`src/cli.rs`** — Clap CLI definition
 - **`src/error.rs`** — `RumError` enum with miette diagnostics and actionable hints
 - **`src/main.rs`** — Entry point, wires CLI to backend

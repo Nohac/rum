@@ -36,11 +36,7 @@ pub enum Command {
     Down,
 
     /// Undefine VM and remove artifacts
-    Destroy {
-        /// Also remove cached base image
-        #[arg(long)]
-        purge: bool,
-    },
+    Destroy,
 
     /// Show VM state
     Status,

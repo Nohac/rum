@@ -121,13 +121,13 @@ async fn main() -> miette::Result<()> {
                 })?;
             println!("{msg}");
         }
-        Command::Destroy { purge } => {
+        Command::Destroy => {
             // Stop VM + daemon via roam
             let client = rum::daemon::resolve(&sys_config);
             let _ = client.force_stop().await;
 
             // Local cleanup: undefine, network teardown, work dir removal
-            destroy_cleanup(&sys_config, purge).await?;
+            destroy_cleanup(&sys_config).await?;
         }
         Command::Status => {
             let client = rum::daemon::resolve(&sys_config);
@@ -258,11 +258,8 @@ async fn main() -> miette::Result<()> {
 }
 
 /// Local cleanup after force-stopping a VM via roam: undefine domain,
-/// tear down auto-created networks, remove work dir, optionally purge cache.
-async fn destroy_cleanup(
-    sys_config: &rum::config::SystemConfig,
-    purge: bool,
-) -> miette::Result<()> {
+/// tear down auto-created networks, remove work dir.
+async fn destroy_cleanup(sys_config: &rum::config::SystemConfig) -> miette::Result<()> {
     use virt::connect::Connect;
     use virt::domain::Domain;
     use virt::network::Network;
@@ -309,21 +306,6 @@ async fn destroy_cleanup(
                 context: format!("removing {}", work.display()),
                 source: e,
             })?;
-    }
-
-    // Purge: remove cached base image
-    if purge
-        && let Some(filename) = config.image.base.rsplit('/').next()
-    {
-        let cached = rum::paths::cache_dir().join(filename);
-        if cached.exists() {
-            tokio::fs::remove_file(&cached)
-                .await
-                .map_err(|e| rum::error::RumError::Io {
-                    context: format!("removing cached image {}", cached.display()),
-                    source: e,
-                })?;
-        }
     }
 
     match (had_domain, had_artifacts) {
