@@ -88,6 +88,16 @@ pub enum Command {
         args: Vec<String>,
     },
 
+    /// Re-run provisioning scripts on a running VM
+    Provision {
+        /// Run only [provision.system] scripts
+        #[arg(long)]
+        system: bool,
+        /// Run only [provision.boot] scripts
+        #[arg(long)]
+        boot: bool,
+    },
+
     /// Manage cached base images
     Image {
         #[command(subcommand)]

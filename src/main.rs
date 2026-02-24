@@ -171,6 +171,71 @@ async fn main() -> miette::Result<()> {
             let exit_code = rum::agent::run_exec(cid, command).await?;
             std::process::exit(exit_code);
         }
+        Command::Provision { system, boot } => {
+            let cid = rum::backend::libvirt::get_vsock_cid(&sys_config)?;
+
+            // Build provision scripts (same pattern as libvirt.rs up())
+            let config = &sys_config.config;
+            let drives = sys_config.resolve_drives()?;
+            let resolved_fs = sys_config.resolve_fs(&drives)?;
+            let mut provision_scripts = Vec::new();
+
+            if !resolved_fs.is_empty() {
+                provision_scripts.push(rum::agent::ProvisionScript {
+                    name: "rum-drives".into(),
+                    title: "Setting up drives and filesystems".into(),
+                    content: rum::cloudinit::build_drive_script(&resolved_fs),
+                    order: 0,
+                    run_on: rum::agent::RunOn::System,
+                });
+            }
+            if let Some(ref sys) = config.provision.system {
+                provision_scripts.push(rum::agent::ProvisionScript {
+                    name: "rum-system".into(),
+                    title: "Running system provisioning".into(),
+                    content: sys.script.clone(),
+                    order: 1,
+                    run_on: rum::agent::RunOn::System,
+                });
+            }
+            if let Some(ref boot_cfg) = config.provision.boot {
+                provision_scripts.push(rum::agent::ProvisionScript {
+                    name: "rum-boot".into(),
+                    title: "Running boot provisioning".into(),
+                    content: boot_cfg.script.clone(),
+                    order: 2,
+                    run_on: rum::agent::RunOn::Boot,
+                });
+            }
+
+            // Filter by flags: --system = only System, --boot = only Boot, neither = all
+            let scripts: Vec<_> = if system && !boot {
+                provision_scripts
+                    .into_iter()
+                    .filter(|s| matches!(s.run_on, rum::agent::RunOn::System))
+                    .collect()
+            } else if boot && !system {
+                provision_scripts
+                    .into_iter()
+                    .filter(|s| matches!(s.run_on, rum::agent::RunOn::Boot))
+                    .collect()
+            } else {
+                provision_scripts
+            };
+
+            if scripts.is_empty() {
+                println!("No provisioning scripts to run.");
+                return Ok(());
+            }
+
+            let agent = rum::agent::wait_for_agent(cid).await?;
+            let logs_dir = rum::paths::logs_dir(&sys_config.id, sys_config.name.as_deref());
+            std::fs::create_dir_all(&logs_dir).ok();
+
+            let total_steps = scripts.len();
+            let mut progress = rum::progress::StepProgress::new(total_steps, mode);
+            rum::agent::run_provision(&agent, scripts, &mut progress, &logs_dir).await?;
+        }
         Command::DumpIso { dir } => {
             use rum::cloudinit;
             let mounts = sys_config.resolve_mounts()?;

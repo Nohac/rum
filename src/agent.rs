@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use roam_stream::{Client, Connector, HandshakeConfig, NoDispatcher, connect};
+pub use rum_agent::{ProvisionScript, RunOn};
 use rum_agent::{LogEvent, LogLevel, LogStream, ProvisionEvent, RumAgentClient};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -37,7 +38,7 @@ const FORWARD_PORT: u32 = 2223;
 const AGENT_TIMEOUT_SECS: u64 = 120;
 const AGENT_RETRY_INTERVAL_MS: u64 = 500;
 
-pub(crate) struct VsockConnector {
+pub struct VsockConnector {
     cid: u32,
 }
 
@@ -50,12 +51,12 @@ impl Connector for VsockConnector {
 }
 
 /// Type alias for the agent RPC client over vsock.
-pub(crate) type AgentClient = RumAgentClient<Client<VsockConnector, NoDispatcher>>;
+pub type AgentClient = RumAgentClient<Client<VsockConnector, NoDispatcher>>;
 
 /// Wait for the rum-agent in the guest to respond to a ping over vsock.
 /// Retries until the agent is ready or the timeout expires.
 /// Returns the connected client for further RPC calls.
-pub(crate) async fn wait_for_agent(cid: u32) -> Result<AgentClient, RumError> {
+pub async fn wait_for_agent(cid: u32) -> Result<AgentClient, RumError> {
     let connector = VsockConnector { cid };
     let client = connect(connector, HandshakeConfig::default(), NoDispatcher);
     let service = RumAgentClient::new(client);
@@ -177,7 +178,7 @@ pub(crate) fn start_log_subscription(agent: &AgentClient) -> JoinHandle<()> {
 ///
 /// Creates one progress step per script. Each step reads `ProvisionEvent`s
 /// from the shared channel until it receives `Done`.
-pub(crate) async fn run_provision(
+pub async fn run_provision(
     agent: &AgentClient,
     scripts: Vec<rum_agent::ProvisionScript>,
     progress: &mut StepProgress,
