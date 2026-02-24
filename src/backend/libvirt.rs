@@ -42,6 +42,7 @@ impl super::Backend for LibvirtBackend {
         let config = &sys_config.config;
         let work = paths::work_dir(id, name_opt);
         let overlay_path = paths::overlay_path(id, name_opt);
+        let was_previously_provisioned = overlay_path.exists() && !reset;
 
         // Resolve mounts and drives early so we fail fast on bad config
         let mounts = sys_config.resolve_mounts()?;
@@ -313,7 +314,11 @@ impl super::Backend for LibvirtBackend {
                     Ok::<_, RumError>(())
                 })
                 .await?;
-            phase.set(UpPhase::NotReady);
+            if was_previously_provisioned {
+                phase.set(UpPhase::Ready);
+            } else {
+                phase.set(UpPhase::NotReady);
+            }
         } else {
             progress.skip("VM already running");
             tracing::info!(vm_name, "VM already running");

@@ -1,6 +1,6 @@
 # Second rum up on previously-provisioned VM should enter Ready phase immediately
 
-**ID:** 597ba711 | **Status:** Open | **Created:** 2026-02-24T00:14:14+01:00
+**ID:** 597ba711 | **Status:** Done | **Created:** 2026-02-24T00:14:14+01:00
 
 Related: #0dca733d (provision.system should only run on first boot)
 
