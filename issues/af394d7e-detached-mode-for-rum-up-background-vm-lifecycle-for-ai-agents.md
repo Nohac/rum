@@ -1,6 +1,6 @@
 # Detached mode for rum up (background VM lifecycle for AI agents)
 
-**ID:** af394d7e | **Status:** Open | **Created:** 2026-02-22T16:20:41+01:00
+**ID:** af394d7e | **Status:** Done | **Created:** 2026-02-22T16:20:41+01:00
 
 ## Problem
 
