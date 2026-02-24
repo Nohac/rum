@@ -2,11 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Directory Layout
+
+The working directory may be **`rum-base/`** (parent) or **`rum-base/rum/`** (the actual git repo + Cargo project). Check which one you're in:
+
+- **`rum-base/`** — contains the git repo (`rum/`) and worktrees (`w1/`–`w5/`). `CLAUDE.md` and `.claude/` are symlinked from `rum/`. **Cargo and git commands must be run inside `rum/`** (or the appropriate worktree).
+- **`rum-base/rum/`** — the actual git repository with `Cargo.toml`, `src/`, `issues/`, etc.
+- **`rum-base/w1/`–`w5/`** — git worktrees for parallel development. Each is a full checkout of the repo.
+
+If your working directory is `rum-base/`, always `cd rum` (or `cd` into the appropriate worktree) before running `cargo`, `git`, or file-relative commands. Source files are at `rum/src/...`, not `src/...`.
+
 ## Project Overview
 
 **rum** is a lightweight CLI tool (Rust) for provisioning and running single VM instances via libvirt. It uses declarative TOML config (`rum.toml`) to manage VMs with cloud images, cloud-init provisioning, and serial console access. The full specification is in `spec.md`.
 
-CLI binary name: `rum`. Implemented commands: `up`, `down`, `destroy`, `status`.
+CLI binary name: `rum`. Implemented commands: `up`, `down`, `destroy`, `status`, `ssh`, `ssh-config`, `exec`, `provision`, `log`, `init`, `image`, `skill`, `dump-iso`.
 
 ## Build Commands
 

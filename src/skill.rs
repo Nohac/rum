@@ -113,39 +113,90 @@ Filesystem provisioning on drives. Type is `ext4`, `xfs`, `zfs`, `btrfs`, etc.
 ## CLI Commands
 
 ```
-rum up [--reset]          Create/start VM, attach console. --reset wipes overlay for fresh boot.
-rum down                  Graceful ACPI shutdown.
-rum destroy [--purge]     Stop + undefine domain + remove artifacts. --purge also removes cached image.
-rum status                Show VM state and IP address.
+rum up [--reset] [-d]     Create/start VM. --reset forces fresh boot. -d detaches after provisioning.
+rum down                  Graceful ACPI shutdown (via daemon).
+rum destroy [--purge]     Force-stop VM + daemon, undefine domain, remove artifacts. --purge removes cached image.
+rum status                Show VM state, IP addresses, and daemon status.
+rum exec <command>        Run a command inside the VM via vsock agent. Streams stdout/stderr, returns exit code.
 rum ssh [args...]         SSH into VM (passes extra args to ssh).
 rum ssh-config            Print OpenSSH config block for the VM.
-rum exec <command>        Run command inside VM via vsock agent.
 rum init [--defaults]     Create rum.toml in current directory. --defaults skips prompts.
 rum image list            List cached base images.
 rum image delete <name>   Delete a specific cached image.
 rum image clear           Delete all cached images.
 rum image search [query]  Search cloud image registry, update rum.toml.
+rum provision [--system] [--boot]  Re-run provisioning scripts on a running VM via vsock agent.
 rum log [--failed|--all|--rum]  View provisioning and runtime logs.
 rum skill                 Print this reference document.
 ```
 
+## Architecture: Daemon and Agent
+
+`rum up` spawns a background **daemon** (via `roam`) that manages the VM lifecycle. The daemon stays running after `rum up` exits and handles `rum down`, `rum status`, `rum ssh-config`, etc. via IPC.
+
+A **vsock agent** binary is embedded in rum and deployed into the VM at first boot via the cloud-init seed ISO. The agent runs as a systemd service inside the guest and communicates with the host over virtio-vsock (no network required). `rum exec` uses this agent to run commands inside the VM.
+
+**Detached mode** (`rum up -d`): provisions the VM and exits immediately — no serial console is attached. The daemon continues running in the background. This is the mode to use for programmatic/agent workflows. When stdin is not a terminal, detached mode is used automatically.
+
 ## Common Workflows
 
-**Create and start a VM:**
+**Create and start a VM (interactive):**
 1. Create `rum.toml` with image and resources (or run `rum init --defaults`)
 2. Run `rum up` — downloads image, creates overlay, boots VM, attaches console
+3. Ctrl-] to detach from console (daemon keeps running)
+
+**Create and start a VM (programmatic):**
+1. Create `rum.toml`
+2. `rum up -d` — provisions and exits, daemon runs in background
+3. `rum exec <command>` — run commands inside the VM
+4. `rum down` or `rum destroy` when done
+
+**Re-run provisioning scripts (no reboot):**
+`rum provision` — re-runs all scripts. `--system` or `--boot` to filter by type.
 
 **Re-provision from scratch:**
 `rum up --reset` — wipes overlay and seed ISO, forces fresh first boot
+
+**Run commands inside the VM:**
+`rum exec "apt-get update && apt-get install -y curl"` — runs via vsock agent, streams output, returns exit code
 
 **SSH into a running VM:**
 `rum ssh` or `rum ssh -- -L 8080:localhost:80` (with port forwarding)
 
 **Tear down completely:**
-`rum destroy --purge` — removes domain, artifacts, and cached base image
+`rum destroy --purge` — force-stops VM and daemon, removes domain, artifacts, and cached base image
 
 **Named configs (multiple VMs in one directory):**
 Name the file `dev.rum.toml` — the VM gets name "dev". Use `rum -c dev.rum.toml up`.
+
+## Full Lifecycle (for AI agents)
+
+An AI agent can manage a VM entirely through CLI commands:
+
+```sh
+# 1. Create config
+rum init --defaults        # or write rum.toml directly
+
+# 2. Boot VM in background
+rum up -d                  # provisions, starts daemon, exits
+
+# 3. Check readiness
+rum status                 # shows state, IPs, daemon status
+
+# 4. Run commands inside VM
+rum exec "whoami"          # single command
+rum exec "cd /mnt/project && make test"  # compound command
+
+# 5. Inspect logs on failure
+rum log                    # latest script log
+rum log --failed           # latest failed script log
+rum log --rum              # rum's own debug log
+
+# 6. Tear down
+rum destroy                # stop VM + daemon, remove artifacts
+```
+
+All commands are idempotent and non-interactive. `rum exec` returns the command's exit code, so agents can check `$?` for success/failure. Output from `rum exec` streams to stdout/stderr in real time.
 
 ## Constraints
 
