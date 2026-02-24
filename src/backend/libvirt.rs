@@ -340,9 +340,26 @@ impl super::Backend for LibvirtBackend {
 
         // 7. Run provisioning scripts via agent
         let logs = paths::logs_dir(id, name_opt);
+        let marker = paths::provisioned_marker(id, name_opt);
+        let previously_provisioned = marker.exists();
+
         if phase.get() == UpPhase::NotReady && let Some(ref agent) = agent_client && !provision_scripts.is_empty() {
-            if let Err(e) = crate::agent::run_provision(agent, provision_scripts, &mut progress, &logs).await {
+            // Filter out system scripts if already provisioned
+            let scripts_to_run: Vec<_> = if previously_provisioned {
+                provision_scripts.into_iter().filter(|s| !matches!(s.run_on, rum_agent::RunOn::System)).collect()
+            } else {
+                provision_scripts
+            };
+
+            if scripts_to_run.is_empty() {
+                // All scripts were filtered out (system-only, already provisioned)
+            } else if let Err(e) = crate::agent::run_provision(agent, scripts_to_run, &mut progress, &logs).await {
                 provision_error = Some(e);
+            }
+
+            // Write marker only on first successful provisioning
+            if provision_error.is_none() && !previously_provisioned {
+                let _ = tokio::fs::write(&marker, b"").await;
             }
         } else {
             for script in &provision_scripts {

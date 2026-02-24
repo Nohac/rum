@@ -45,6 +45,11 @@ pub fn logs_dir(id: &str, name: Option<&str>) -> PathBuf {
     work_dir(id, name).join("logs")
 }
 
+/// Path to the provisioned marker for a VM.
+pub fn provisioned_marker(id: &str, name: Option<&str>) -> PathBuf {
+    work_dir(id, name).join(".provisioned")
+}
+
 /// Path to the config_path file that records which config file created this work dir.
 pub fn config_path_file(id: &str, name: Option<&str>) -> PathBuf {
     work_dir(id, name).join("config_path")
