@@ -134,6 +134,6 @@ rg 'Status:.*Open' issues/
 ## Not Yet Implemented
 
 - SSH key injection, readiness polling, `rum ssh` command
-- virtiofs/9p mounts, inotify bridging
+- virtiofs/9p mounts
 - `rum logs`
 - UEFI boot, bridge networking, sha256 image verification

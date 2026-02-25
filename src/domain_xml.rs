@@ -547,7 +547,6 @@ memory_mb = 512
                 target: "/mnt/project".into(),
                 readonly: false,
                 tag: "mnt_project".into(),
-                inotify: false,
                 default: false,
             },
             ResolvedMount {
@@ -555,7 +554,6 @@ memory_mb = 512
                 target: "/mnt/data".into(),
                 readonly: true,
                 tag: "mnt_data".into(),
-                inotify: false,
                 default: false,
             },
         ];

@@ -81,7 +81,6 @@ Linux-only. Requires libvirt + KVM + qemu.
 | `target`   | string | —       | Guest mount point (absolute path)              |
 | `readonly` | bool   | false   | Mount read-only                                |
 | `tag`      | string | —       | virtiofs tag (auto-derived from target if omitted) |
-| `inotify`  | bool   | false   | Enable inotify bridging                        |
 | `default`  | bool   | false   | Mark as default mount (at most one)            |
 
 ### [drives.\<name\>]

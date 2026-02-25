@@ -338,7 +338,7 @@ pub async fn run_serve(sys_config: &SystemConfig) -> Result<(), RumError> {
     let uri = sys_config.libvirt_uri().to_string();
     let vm_name_owned = vm_name.to_string();
 
-    // Start background services (log subscription, port forwards, inotify bridge)
+    // Start background services (log subscription, port forwards)
     let service_handles = start_services(sys_config).await?;
 
     // Write PID file
@@ -421,7 +421,6 @@ pub async fn run_serve(sys_config: &SystemConfig) -> Result<(), RumError> {
 pub(crate) struct ServiceHandles {
     pub log_handle: Option<JoinHandle<()>>,
     pub forward_handles: Vec<JoinHandle<()>>,
-    pub watch_handle: Option<JoinHandle<()>>,
 }
 
 fn abort_handles(handles: &ServiceHandles) {
@@ -431,16 +430,10 @@ fn abort_handles(handles: &ServiceHandles) {
     for h in &handles.forward_handles {
         h.abort();
     }
-    if let Some(ref h) = handles.watch_handle {
-        h.abort();
-    }
 }
 
 async fn start_services(sys_config: &SystemConfig) -> Result<ServiceHandles, RumError> {
     let config = &sys_config.config;
-    let vm_name = sys_config.display_name();
-    let id = &sys_config.id;
-    let name_opt = sys_config.name.as_deref();
 
     // Connect to agent via vsock
     let vsock_cid = crate::backend::libvirt::get_vsock_cid(sys_config).ok();
@@ -465,24 +458,9 @@ async fn start_services(sys_config: &SystemConfig) -> Result<ServiceHandles, Rum
         Vec::new()
     };
 
-    // Inotify bridge
-    let mounts = sys_config.resolve_mounts().unwrap_or_default();
-    let watch_handle = if mounts.iter().any(|m| m.inotify && !m.readonly) {
-        Some(crate::watch::start_inotify_bridge(
-            &mounts,
-            sys_config.libvirt_uri().to_string(),
-            vm_name.to_string(),
-            config.ssh.user.clone(),
-            paths::ssh_key_path(id, name_opt),
-        ))
-    } else {
-        None
-    };
-
     Ok(ServiceHandles {
         log_handle,
         forward_handles,
-        watch_handle,
     })
 }
 

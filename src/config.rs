@@ -16,8 +16,6 @@ pub struct MountConfig {
     #[facet(default)]
     pub tag: String,
     #[facet(default)]
-    pub inotify: bool,
-    #[facet(default)]
     pub default: bool,
 }
 
@@ -27,7 +25,6 @@ pub struct ResolvedMount {
     pub target: String,
     pub readonly: bool,
     pub tag: String,
-    pub inotify: bool,
     pub default: bool,
 }
 
@@ -390,7 +387,6 @@ impl SystemConfig {
                 target: m.target.clone(),
                 readonly: m.readonly,
                 tag,
-                inotify: m.inotify,
                 default: m.default,
             });
         }

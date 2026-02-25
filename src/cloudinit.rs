@@ -453,7 +453,6 @@ mod tests {
             target: "/mnt/project".into(),
             readonly: false,
             tag: "mnt_project".into(),
-            inotify: false,
             default: false,
         }];
         let config = SeedConfig { mounts: &mounts, ..default_seed_config() };
@@ -583,7 +582,6 @@ mod tests {
             target: "/mnt/project".into(),
             readonly: false,
             tag: "mnt_project".into(),
-            inotify: false,
             default: true,
         }];
         let config = SeedConfig { mounts: &mounts, ..default_seed_config() };

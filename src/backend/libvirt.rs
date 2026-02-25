@@ -407,18 +407,6 @@ impl super::Backend for LibvirtBackend {
             Vec::new()
         };
 
-        let watch_handle = if mounts.iter().any(|m| m.inotify && !m.readonly) {
-            Some(crate::watch::start_inotify_bridge(
-                &mounts,
-                sys_config.libvirt_uri().to_string(),
-                vm_name.to_string(),
-                config.ssh.user.clone(),
-                ssh_key_path.clone(),
-            ))
-        } else {
-            None
-        };
-
         if provision_error.is_some() {
             progress.skip("Provisioning failed — VM kept running for debugging");
         } else {
@@ -453,10 +441,6 @@ impl super::Backend for LibvirtBackend {
         for handle in forward_handles {
             handle.abort();
         }
-        if let Some(handle) = watch_handle {
-            handle.abort();
-        }
-
         Ok::<_, RumError>(())
             } => result,
         };
