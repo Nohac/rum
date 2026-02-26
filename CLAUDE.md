@@ -16,7 +16,7 @@ If your working directory is `rum-base/`, always `cd rum` (or `cd` into the appr
 
 **rum** is a lightweight CLI tool (Rust) for provisioning and running single VM instances via libvirt. It uses declarative TOML config (`rum.toml`) to manage VMs with cloud images, cloud-init provisioning, and serial console access. The full specification is in `spec.md`.
 
-CLI binary name: `rum`. Implemented commands: `up`, `down`, `destroy`, `status`, `ssh`, `ssh-config`, `exec`, `provision`, `log`, `init`, `image`, `skill`, `dump-iso`.
+CLI binary name: `rum`. Implemented commands: `up`, `down`, `destroy`, `status`, `ssh`, `ssh-config`, `exec`, `cp`, `provision`, `log`, `init`, `image`, `skill`, `dump-iso`.
 
 ## Build Commands
 

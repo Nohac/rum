@@ -88,4 +88,8 @@ pub enum RumError {
         #[source]
         source: std::io::Error,
     },
+
+    #[error("copy failed: {message}")]
+    #[diagnostic(help("ensure the VM is running and the path is accessible"))]
+    CopyFailed { message: String },
 }

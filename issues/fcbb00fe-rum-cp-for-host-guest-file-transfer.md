@@ -1,6 +1,6 @@
 # rum cp for host-guest file transfer
 
-**ID:** fcbb00fe | **Status:** Open | **Created:** 2026-02-24T20:41:09+01:00
+**ID:** fcbb00fe | **Status:** Done | **Created:** 2026-02-24T20:41:09+01:00
 
 Add `rum cp` for one-off file transfers without needing persistent `[[mounts]]`:
 

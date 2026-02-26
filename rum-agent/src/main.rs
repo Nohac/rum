@@ -2,8 +2,8 @@ mod log_layer;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use roam::Tx;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use roam::{Rx, Tx};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::broadcast;
@@ -13,8 +13,9 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 use roam_stream::{HandshakeConfig, accept};
 use rum_agent::{
-    ExecResult, LogEvent, LogLevel, LogStream, ProvisionEvent, ProvisionResult, ProvisionScript,
-    RunOn, RumAgent, RumAgentDispatcher,
+    ExecResult, FileChunk, LogEvent, LogLevel, LogStream, ProvisionEvent, ProvisionResult,
+    ProvisionScript, ReadFileResult, RunOn, RumAgent, RumAgentDispatcher, WriteFileInfo,
+    WriteFileResult,
 };
 
 use std::path::Path;
@@ -142,6 +143,112 @@ impl RumAgent for RumAgentImpl {
             success: true,
             failed_script: String::new(),
         }
+    }
+
+    async fn write_file(
+        &self,
+        _cx: &roam::Context,
+        info: WriteFileInfo,
+        mut data: Rx<FileChunk>,
+    ) -> Result<WriteFileResult, String> {
+        use std::os::unix::fs::PermissionsExt;
+        use tokio::io::BufWriter;
+
+        let dest = Path::new(&info.path);
+        let final_path = if dest.is_dir() {
+            dest.join(&info.filename)
+        } else {
+            dest.to_path_buf()
+        };
+
+        // Create parent directories
+        if let Some(parent) = final_path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("create dirs: {e}"))?;
+        }
+
+        let file = tokio::fs::File::create(&final_path)
+            .await
+            .map_err(|e| format!("create file: {e}"))?;
+        let mut writer = BufWriter::new(file);
+        let mut bytes_written: u64 = 0;
+
+        while let Ok(Some(chunk)) = data.recv().await {
+            writer
+                .write_all(&chunk.data)
+                .await
+                .map_err(|e| format!("write: {e}"))?;
+            bytes_written += chunk.data.len() as u64;
+        }
+
+        writer.flush().await.map_err(|e| format!("flush: {e}"))?;
+
+        // Set permissions
+        tokio::fs::set_permissions(
+            &final_path,
+            std::fs::Permissions::from_mode(info.mode),
+        )
+        .await
+        .map_err(|e| format!("chmod: {e}"))?;
+
+        tracing::info!(
+            path = %final_path.display(),
+            bytes = bytes_written,
+            expected = info.size,
+            "write_file complete"
+        );
+
+        Ok(WriteFileResult { bytes_written })
+    }
+
+    async fn read_file(
+        &self,
+        _cx: &roam::Context,
+        path: String,
+        output: Tx<FileChunk>,
+    ) -> Result<ReadFileResult, String> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let file_path = Path::new(&path);
+
+        if !file_path.exists() {
+            return Err(format!("file not found: {path}"));
+        }
+        if file_path.is_dir() {
+            return Err(format!("path is a directory: {path}"));
+        }
+
+        let metadata = tokio::fs::metadata(file_path)
+            .await
+            .map_err(|e| format!("metadata: {e}"))?;
+        let mode = metadata.permissions().mode();
+        let size = metadata.len();
+
+        let file = tokio::fs::File::open(file_path)
+            .await
+            .map_err(|e| format!("open: {e}"))?;
+        let mut reader = BufReader::new(file);
+
+        const CHUNK_SIZE: usize = 10 * 1024 * 1024; // 10 MB
+        let mut buf = vec![0u8; CHUNK_SIZE];
+
+        loop {
+            let n = reader.read(&mut buf).await.map_err(|e| format!("read: {e}"))?;
+            if n == 0 {
+                break;
+            }
+            let chunk = FileChunk {
+                data: buf[..n].to_vec(),
+            };
+            if output.send(&chunk).await.is_err() {
+                break; // client disconnected
+            }
+        }
+
+        tracing::info!(path, size, "read_file complete");
+
+        Ok(ReadFileResult { mode, size })
     }
 }
 

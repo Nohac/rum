@@ -420,6 +420,33 @@ fn serve_command_hidden() {
 }
 
 #[test]
+fn cp_help_works() {
+    rum()
+        .args(["cp", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Copy files between host and guest"));
+}
+
+#[test]
+fn cp_no_colon_prefix_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = write_test_config(&dir);
+
+    rum()
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "cp",
+            "/tmp/a",
+            "/tmp/b",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("neither path has a : prefix"));
+}
+
+#[test]
 fn config_with_ports_section() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("rum.toml");

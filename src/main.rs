@@ -171,6 +171,28 @@ async fn main() -> miette::Result<()> {
             let exit_code = rum::agent::run_exec(cid, command).await?;
             std::process::exit(exit_code);
         }
+        Command::Cp { src, dst } => {
+            let direction = rum::agent::parse_copy_args(&src, &dst)?;
+            let cid = rum::backend::libvirt::get_vsock_cid(&sys_config)?;
+            match direction {
+                rum::agent::CopyDirection::Upload { local, guest } => {
+                    let bytes = rum::agent::copy_to_guest(cid, &local, &guest).await?;
+                    println!(
+                        "{} -> :{} ({bytes} bytes)",
+                        local.display(),
+                        guest,
+                    );
+                }
+                rum::agent::CopyDirection::Download { guest, local } => {
+                    let bytes = rum::agent::copy_from_guest(cid, &guest, &local).await?;
+                    println!(
+                        ":{} -> {} ({bytes} bytes)",
+                        guest,
+                        local.display(),
+                    );
+                }
+            }
+        }
         Command::Provision { system, boot } => {
             let cid = rum::backend::libvirt::get_vsock_cid(&sys_config)?;
 

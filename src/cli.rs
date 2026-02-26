@@ -84,6 +84,14 @@ pub enum Command {
         args: Vec<String>,
     },
 
+    /// Copy files between host and guest
+    Cp {
+        /// Source path (prefix with : for guest path)
+        src: String,
+        /// Destination path (prefix with : for guest path)
+        dst: String,
+    },
+
     /// Re-run provisioning scripts on a running VM
     Provision {
         /// Run only [provision.system] scripts
