@@ -346,8 +346,8 @@ impl super::Backend for LibvirtBackend {
             }
         };
 
-        // Resolve vsock CID from the (now-running) domain for port forwards
-        let vsock_cid = parse_vsock_cid(&dom);
+        // Vsock CID resolved by daemon for port forwards (kept for future use)
+        let _vsock_cid = parse_vsock_cid(&dom);
 
         // Per-script provisioning via agent
         let logs = paths::logs_dir(id, name_opt);
@@ -382,30 +382,19 @@ impl super::Backend for LibvirtBackend {
             phase.set(UpPhase::Ready);
         }
 
-        // Detach: spawn daemon for background services and exit early
+        // Always spawn daemon for background services (log subscription, port forwards)
+        if !crate::daemon::is_daemon_running(sys_config) {
+            crate::daemon::spawn_background(sys_config)?;
+            crate::daemon::wait_for_daemon_ready(sys_config).await?;
+        }
+
+        // Detach: exit early now that daemon is running
         if detach {
-            if !crate::daemon::is_daemon_running(sys_config) {
-                crate::daemon::spawn_background(sys_config)?;
-                crate::daemon::wait_for_daemon_ready(sys_config).await?;
-            }
             phase.set(UpPhase::Detached);
             progress.skip("Ready (detached)");
             progress.println("VM is running (detached). Use `rum down` to stop.");
             return Ok(());
         }
-
-        // Ready — start log subscription + port forwards
-        let log_handle = agent_client
-            .as_ref()
-            .map(crate::agent::start_log_subscription);
-
-        let forward_handles = if let Some(cid) = vsock_cid
-            && !config.ports.is_empty()
-        {
-            crate::agent::start_port_forwards(cid, &config.ports).await?
-        } else {
-            Vec::new()
-        };
 
         if provision_error.is_some() {
             progress.skip("Provisioning failed — VM kept running for debugging");
@@ -433,14 +422,6 @@ impl super::Backend for LibvirtBackend {
             _ = tokio::signal::ctrl_c() => {},
             _ = poll_domain_state(&uri, &vm_name_owned) => {},
         };
-
-        // Clean up background tasks
-        if let Some(handle) = log_handle {
-            handle.abort();
-        }
-        for handle in forward_handles {
-            handle.abort();
-        }
         Ok::<_, RumError>(())
             } => result,
         };
@@ -476,19 +457,33 @@ impl super::Backend for LibvirtBackend {
             }
 
             UpPhase::Ready => {
-                let conn = connect(sys_config)?;
-                let still_running = Domain::lookup_by_name(&conn, vm_name)
-                    .ok()
-                    .is_some_and(|d| is_running(&d));
-                if still_running {
+                // Send shutdown through the daemon (which also stops services)
+                if let Ok(client) = crate::daemon::connect(sys_config) {
                     progress
                         .run("Shutting down VM...", |_step| async {
-                            let dom = Domain::lookup_by_name(&conn, vm_name).unwrap();
-                            shutdown_domain(&dom).await
+                            let msg = client.shutdown().await.map_err(|e| RumError::Daemon {
+                                message: e.to_string(),
+                            })?;
+                            tracing::info!("{msg}");
+                            Ok::<_, RumError>(())
                         })
                         .await?;
                 } else {
-                    progress.skip("VM stopped externally");
+                    // Daemon not reachable — fall back to direct shutdown
+                    let conn = connect(sys_config)?;
+                    let still_running = Domain::lookup_by_name(&conn, vm_name)
+                        .ok()
+                        .is_some_and(|d| is_running(&d));
+                    if still_running {
+                        progress
+                            .run("Shutting down VM...", |_step| async {
+                                let dom = Domain::lookup_by_name(&conn, vm_name).unwrap();
+                                shutdown_domain(&dom).await
+                            })
+                            .await?;
+                    } else {
+                        progress.skip("VM stopped externally");
+                    }
                 }
             }
         }

@@ -1,11 +1,8 @@
 use std::io;
 use std::path::PathBuf;
-use std::pin::Pin;
-use std::task::{Context as TaskContext, Poll};
 
 use facet::Facet;
 use roam_stream::{Client, Connector, HandshakeConfig, NoDispatcher, accept};
-use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -35,83 +32,17 @@ pub trait RumDaemon {
     async fn ssh_config(&self) -> Result<String, String>;
 }
 
-// ── Transport: Unix socket or in-process duplex ─────────────────────
+// ── Connector: always Unix socket ───────────────────────────────────
 
-pub enum DaemonTransport {
-    Unix(UnixStream),
-    Duplex(DuplexStream),
-}
-
-impl AsyncRead for DaemonTransport {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        match self.get_mut() {
-            DaemonTransport::Unix(s) => Pin::new(s).poll_read(cx, buf),
-            DaemonTransport::Duplex(s) => Pin::new(s).poll_read(cx, buf),
-        }
-    }
-}
-
-impl AsyncWrite for DaemonTransport {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        match self.get_mut() {
-            DaemonTransport::Unix(s) => Pin::new(s).poll_write(cx, buf),
-            DaemonTransport::Duplex(s) => Pin::new(s).poll_write(cx, buf),
-        }
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
-        match self.get_mut() {
-            DaemonTransport::Unix(s) => Pin::new(s).poll_flush(cx),
-            DaemonTransport::Duplex(s) => Pin::new(s).poll_flush(cx),
-        }
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
-        match self.get_mut() {
-            DaemonTransport::Unix(s) => Pin::new(s).poll_shutdown(cx),
-            DaemonTransport::Duplex(s) => Pin::new(s).poll_shutdown(cx),
-        }
-    }
-}
-
-// ── Connector: selects transport based on daemon availability ───────
-
-pub enum DaemonConnector {
-    Unix { path: PathBuf },
-    Duplex { handler: DaemonImpl },
+pub struct DaemonConnector {
+    path: PathBuf,
 }
 
 impl Connector for DaemonConnector {
-    type Transport = DaemonTransport;
+    type Transport = UnixStream;
 
-    async fn connect(&self) -> io::Result<DaemonTransport> {
-        match self {
-            Self::Unix { path } => {
-                let stream = UnixStream::connect(path).await?;
-                Ok(DaemonTransport::Unix(stream))
-            }
-            Self::Duplex { handler } => {
-                let (client_end, server_end) = tokio::io::duplex(64 * 1024);
-                let dispatcher = RumDaemonDispatcher::new(handler.clone());
-                tokio::spawn(async move {
-                    match accept(server_end, HandshakeConfig::default(), dispatcher).await {
-                        Ok((_handle, _incoming, driver)) => {
-                            let _ = driver.run().await;
-                        }
-                        Err(e) => tracing::error!("local roam accept failed: {e}"),
-                    }
-                });
-                Ok(DaemonTransport::Duplex(client_end))
-            }
-        }
+    async fn connect(&self) -> io::Result<UnixStream> {
+        UnixStream::connect(&self.path).await
     }
 }
 
@@ -119,7 +50,7 @@ impl Connector for DaemonConnector {
 
 pub type DaemonClient = RumDaemonClient<Client<DaemonConnector, NoDispatcher>>;
 
-// ── DaemonImpl: single implementation for both direct and daemon mode ─
+// ── DaemonImpl: daemon-mode implementation ──────────────────────────
 
 enum DaemonAction {
     Shutdown,
@@ -132,11 +63,11 @@ pub struct DaemonImpl {
     vm_name: String,
     ssh_user: String,
     ssh_key_path: PathBuf,
-    action_tx: Option<mpsc::Sender<DaemonAction>>,
+    action_tx: mpsc::Sender<DaemonAction>,
 }
 
 impl DaemonImpl {
-    fn new(sys_config: &SystemConfig, action_tx: Option<mpsc::Sender<DaemonAction>>) -> Self {
+    fn new(sys_config: &SystemConfig, action_tx: mpsc::Sender<DaemonAction>) -> Self {
         Self {
             uri: sys_config.libvirt_uri().to_string(),
             vm_name: sys_config.display_name().to_string(),
@@ -149,12 +80,11 @@ impl DaemonImpl {
     /// Signal the daemon loop to exit after a short delay, giving the
     /// RPC response time to flush back to the client before teardown.
     fn signal_exit_deferred(&self, action: DaemonAction) {
-        if let Some(tx) = self.action_tx.clone() {
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                let _ = tx.send(action).await;
-            });
-        }
+        let tx = self.action_tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let _ = tx.send(action).await;
+        });
     }
 
     fn connect_libvirt(&self) -> Result<Connect, String> {
@@ -170,11 +100,7 @@ impl DaemonImpl {
 
 impl RumDaemon for DaemonImpl {
     async fn ping(&self, _cx: &roam::Context) -> Result<String, String> {
-        if self.action_tx.is_some() {
-            Ok("daemon".into())
-        } else {
-            Ok("direct".into())
-        }
+        Ok("daemon".into())
     }
 
     async fn shutdown(&self, _cx: &roam::Context) -> Result<String, String> {
@@ -245,13 +171,13 @@ impl RumDaemon for DaemonImpl {
                 Ok(StatusInfo {
                     state,
                     ips,
-                    daemon_running: self.action_tx.is_some(),
+                    daemon_running: true,
                 })
             }
             Err(_) => Ok(StatusInfo {
                 state: "not defined".to_string(),
                 ips: Vec::new(),
-                daemon_running: self.action_tx.is_some(),
+                daemon_running: true,
             }),
         }
     }
@@ -297,24 +223,21 @@ fn get_first_ip(dom: &Domain) -> Option<String> {
     None
 }
 
-// ── resolve(): create a client with the right transport ─────────────
+// ── connect(): create a client connected to the daemon ──────────────
 
-pub fn resolve(sys_config: &SystemConfig) -> DaemonClient {
+pub fn connect(sys_config: &SystemConfig) -> Result<DaemonClient, RumError> {
+    if !is_daemon_running(sys_config) {
+        return Err(RumError::Daemon {
+            message: format!(
+                "no daemon running for '{}'. Run `rum up` first.",
+                sys_config.display_name()
+            ),
+        });
+    }
     let sock = paths::socket_path(&sys_config.id, sys_config.name.as_deref());
-
-    let connector = if is_daemon_running(sys_config) {
-        DaemonConnector::Unix { path: sock }
-    } else {
-        if sock.exists() {
-            let _ = std::fs::remove_file(&sock);
-        }
-        DaemonConnector::Duplex {
-            handler: DaemonImpl::new(sys_config, None),
-        }
-    };
-
+    let connector = DaemonConnector { path: sock };
     let client = roam_stream::connect(connector, HandshakeConfig::default(), NoDispatcher);
-    RumDaemonClient::new(client)
+    Ok(RumDaemonClient::new(client))
 }
 
 pub fn is_daemon_running(sys_config: &SystemConfig) -> bool {
@@ -363,7 +286,7 @@ pub async fn run_serve(sys_config: &SystemConfig) -> Result<(), RumError> {
         })?;
 
     let (action_tx, mut action_rx) = mpsc::channel::<DaemonAction>(4);
-    let handler = DaemonImpl::new(sys_config, Some(action_tx));
+    let handler = DaemonImpl::new(sys_config, action_tx);
 
     tracing::info!(vm_name, sock = %sock_path.display(), "daemon listening");
 
@@ -503,11 +426,10 @@ pub async fn wait_for_daemon_ready(sys_config: &SystemConfig) -> Result<(), RumE
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
 
     loop {
-        if is_daemon_running(sys_config) {
-            let client = resolve(sys_config);
-            if client.ping().await.is_ok() {
-                return Ok(());
-            }
+        if let Ok(client) = connect(sys_config)
+            && client.ping().await.is_ok()
+        {
+            return Ok(());
         }
 
         if tokio::time::Instant::now() >= deadline {

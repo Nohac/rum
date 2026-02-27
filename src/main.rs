@@ -112,7 +112,7 @@ async fn main() -> miette::Result<()> {
                 .await?
         }
         Command::Down => {
-            let client = rum::daemon::resolve(&sys_config);
+            let client = rum::daemon::connect(&sys_config)?;
             let msg = client
                 .shutdown()
                 .await
@@ -122,34 +122,47 @@ async fn main() -> miette::Result<()> {
             println!("{msg}");
         }
         Command::Destroy => {
-            // Stop VM + daemon via roam
-            let client = rum::daemon::resolve(&sys_config);
-            let _ = client.force_stop().await;
+            // Stop VM + daemon via roam (if daemon is running)
+            if let Ok(client) = rum::daemon::connect(&sys_config) {
+                let _ = client.force_stop().await;
+            }
 
             // Local cleanup: undefine, network teardown, work dir removal
             destroy_cleanup(&sys_config).await?;
         }
         Command::Status => {
-            let client = rum::daemon::resolve(&sys_config);
-            let info = client
-                .status()
-                .await
-                .map_err(|e| rum::error::RumError::Daemon {
-                    message: e.to_string(),
-                })?;
-
             let vm_name = sys_config.display_name();
-            println!("VM '{vm_name}': {}", info.state);
-            for ip in &info.ips {
-                println!("  IP: {ip}");
-            }
-            if info.daemon_running {
-                println!("  Daemon: running");
+
+            match rum::daemon::connect(&sys_config) {
+                Ok(client) => {
+                    let info = client
+                        .status()
+                        .await
+                        .map_err(|e| rum::error::RumError::Daemon {
+                            message: e.to_string(),
+                        })?;
+
+                    println!("VM '{vm_name}': {}", info.state);
+                    for ip in &info.ips {
+                        println!("  IP: {ip}");
+                    }
+                    if info.daemon_running {
+                        println!("  Daemon: running");
+                    }
+                }
+                Err(_) => {
+                    // No daemon — do an offline status check via libvirt
+                    let info = offline_status(&sys_config);
+                    println!("VM '{vm_name}': {}", info.state);
+                    for ip in &info.ips {
+                        println!("  IP: {ip}");
+                    }
+                }
             }
         }
         Command::Ssh { args } => backend.ssh(&sys_config, &args).await?,
         Command::SshConfig => {
-            let client = rum::daemon::resolve(&sys_config);
+            let client = rum::daemon::connect(&sys_config)?;
             let config_text = client
                 .ssh_config()
                 .await
@@ -337,6 +350,62 @@ async fn destroy_cleanup(sys_config: &rum::config::SystemConfig) -> miette::Resu
     }
 
     Ok(())
+}
+
+/// Offline status check when no daemon is running.
+/// Queries libvirt directly to determine VM state.
+fn offline_status(sys_config: &rum::config::SystemConfig) -> rum::daemon::StatusInfo {
+    use virt::connect::Connect;
+    use virt::domain::Domain;
+
+    virt::error::clear_error_callback();
+    let vm_name = sys_config.display_name();
+
+    let Ok(mut conn) = Connect::open(Some(sys_config.libvirt_uri())) else {
+        return rum::daemon::StatusInfo {
+            state: "not defined".to_string(),
+            ips: Vec::new(),
+            daemon_running: false,
+        };
+    };
+
+    let info = match Domain::lookup_by_name(&conn, vm_name) {
+        Ok(dom) => {
+            let state = if dom.is_active().unwrap_or(false) {
+                "running".to_string()
+            } else {
+                "stopped".to_string()
+            };
+
+            let mut ips = Vec::new();
+            if dom.is_active().unwrap_or(false)
+                && let Ok(ifaces) = dom.interface_addresses(
+                    virt::sys::VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE,
+                    0,
+                )
+            {
+                for iface in &ifaces {
+                    for addr in &iface.addrs {
+                        ips.push(addr.addr.clone());
+                    }
+                }
+            }
+
+            rum::daemon::StatusInfo {
+                state,
+                ips,
+                daemon_running: false,
+            }
+        }
+        Err(_) => rum::daemon::StatusInfo {
+            state: "not defined".to_string(),
+            ips: Vec::new(),
+            daemon_running: false,
+        },
+    };
+
+    let _ = conn.close();
+    info
 }
 
 fn handle_log_command(
