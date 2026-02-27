@@ -20,7 +20,7 @@ use crate::vm_state::VmState;
 // ── Events ──────────────────────────────────────────────────────────
 
 /// Events emitted by workers or received from clients.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     /// Flow just started — triggers initial effects.
     FlowStarted,
@@ -57,7 +57,7 @@ pub enum Event {
 // ── Effects ─────────────────────────────────────────────────────────
 
 /// Effects dispatched to workers by the event loop.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     /// Download/verify base image.
     EnsureImage,
