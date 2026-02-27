@@ -20,3 +20,7 @@ pub mod qcow2;
 pub mod registry;
 pub mod skill;
 pub mod util;
+pub mod vm_state;
+pub mod flow;
+pub mod observer;
+pub mod workers;
