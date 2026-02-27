@@ -5,6 +5,7 @@
 //! The server event loop drives flows by dispatching effects to workers and
 //! feeding their completion events back into the flow.
 
+pub mod event_loop;
 pub mod first_boot;
 pub mod reboot;
 pub mod reattach;
