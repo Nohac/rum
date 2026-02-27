@@ -39,7 +39,10 @@ impl Transition {
 }
 
 /// Data from an effect stream (log line, progress update, etc.)
-#[derive(Debug, Clone)]
+///
+/// Derives `Facet` so it can be sent/received over `roam::Rx<EffectData>`.
+#[derive(Debug, Clone, facet::Facet)]
+#[repr(u8)]
 pub enum EffectData {
     LogLine(String),
     Progress { current: u64, total: u64 },
@@ -83,4 +86,60 @@ pub trait Observer: Send + 'static {
 
     /// Create a clone suitable for driving a parallel stream task.
     fn clone_for_stream(&self) -> Box<dyn Observer>;
+}
+
+// ── Client loop functions ─────────────────────────────────────────
+
+/// Run the observe loop — subscribe to transitions and render via observer.
+///
+/// Loops on the transition receiver until the VM reaches a terminal state
+/// or the channel closes. Effect streams will be integrated in phase 6;
+/// for now this only handles transitions.
+pub async fn run_observe_loop(
+    transition_rx: &mut tokio::sync::mpsc::Receiver<Transition>,
+    observer: &mut dyn Observer,
+) -> Result<(), crate::error::RumError> {
+    while let Some(t) = transition_rx.recv().await {
+        observer.on_transition(&t).await;
+        if t.new_state.is_terminal() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Attached client: owns shutdown lifecycle.
+///
+/// First Ctrl+C sends InitShutdown, second Ctrl+C or 30 s timeout sends
+/// ForceStop. The shutdown handler races against the observe loop.
+pub async fn run_attached_client(
+    transition_rx: &mut tokio::sync::mpsc::Receiver<Transition>,
+    observer: &mut dyn Observer,
+) -> Result<(), crate::error::RumError> {
+    let shutdown_handler = async {
+        // First Ctrl+C — would send InitShutdown via roam RPC in full impl.
+        tokio::signal::ctrl_c().await.ok();
+        // Race second Ctrl+C vs 30 s timeout — would send ForceStop.
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+        }
+    };
+
+    tokio::select! {
+        result = run_observe_loop(transition_rx, observer) => result,
+        _ = shutdown_handler => Ok(()),
+    }
+}
+
+/// Observer-only client: Ctrl+C simply disconnects without sending
+/// any shutdown commands to the daemon.
+pub async fn run_observer_client(
+    transition_rx: &mut tokio::sync::mpsc::Receiver<Transition>,
+    observer: &mut dyn Observer,
+) -> Result<(), crate::error::RumError> {
+    tokio::select! {
+        result = run_observe_loop(transition_rx, observer) => result,
+        _ = tokio::signal::ctrl_c() => Ok(()),
+    }
 }
