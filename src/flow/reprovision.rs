@@ -4,11 +4,14 @@ use crate::vm_state::VmState;
 use super::{Effect, Event, Flow};
 
 pub struct ReprovisionFlow {
+    /// All scripts in execution order: system scripts first, then boot scripts.
     scripts: Vec<String>,
 }
 
 impl ReprovisionFlow {
-    pub fn new(scripts: Vec<String>) -> Self {
+    pub fn new(system_scripts: Vec<String>, boot_scripts: Vec<String>) -> Self {
+        let mut scripts = system_scripts;
+        scripts.extend(boot_scripts);
         Self { scripts }
     }
 
@@ -74,7 +77,7 @@ mod tests {
 
     #[test]
     fn happy_path_no_scripts() {
-        let flow = ReprovisionFlow::new(vec![]);
+        let flow = ReprovisionFlow::new(vec![], vec![]);
 
         let (state, effects) = flow.transition(&VmState::Running, &Event::FlowStarted);
         assert_eq!(state, VmState::Running);
@@ -83,7 +86,7 @@ mod tests {
 
     #[test]
     fn happy_path_with_scripts() {
-        let flow = ReprovisionFlow::new(vec!["a.sh".into(), "b.sh".into(), "c.sh".into()]);
+        let flow = ReprovisionFlow::new(vec!["a.sh".into()], vec!["b.sh".into(), "c.sh".into()]);
 
         let (state, effects) = flow.transition(&VmState::Running, &Event::FlowStarted);
         assert_eq!(state, VmState::Running);
@@ -106,7 +109,7 @@ mod tests {
 
     #[test]
     fn script_failed_stays_running() {
-        let flow = ReprovisionFlow::new(vec!["a.sh".into(), "b.sh".into()]);
+        let flow = ReprovisionFlow::new(vec!["a.sh".into()], vec!["b.sh".into()]);
 
         let (state, _) = flow.transition(&VmState::Running, &Event::FlowStarted);
 
@@ -122,7 +125,7 @@ mod tests {
 
     #[test]
     fn init_shutdown() {
-        let flow = ReprovisionFlow::new(vec![]);
+        let flow = ReprovisionFlow::new(vec![], vec![]);
         let (state, effects) = flow.transition(&VmState::Running, &Event::InitShutdown);
         assert_eq!(state, VmState::Running);
         assert_eq!(effects, vec![Effect::ShutdownDomain]);
@@ -130,7 +133,7 @@ mod tests {
 
     #[test]
     fn shutdown_complete() {
-        let flow = ReprovisionFlow::new(vec![]);
+        let flow = ReprovisionFlow::new(vec![], vec![]);
         let (state, effects) = flow.transition(&VmState::Running, &Event::ShutdownComplete);
         assert_eq!(state, VmState::Provisioned);
         assert!(effects.is_empty());
@@ -140,7 +143,7 @@ mod tests {
 
     #[test]
     fn unknown_event_returns_same_state() {
-        let flow = ReprovisionFlow::new(vec![]);
+        let flow = ReprovisionFlow::new(vec![], vec![]);
         let (state, effects) = flow.transition(&VmState::Running, &Event::Detach);
         assert_eq!(state, VmState::Running);
         assert!(effects.is_empty());
@@ -148,7 +151,7 @@ mod tests {
 
     #[test]
     fn domain_started_ignored() {
-        let flow = ReprovisionFlow::new(vec![]);
+        let flow = ReprovisionFlow::new(vec![], vec![]);
         let (state, effects) = flow.transition(&VmState::Running, &Event::DomainStarted);
         assert_eq!(state, VmState::Running);
         assert!(effects.is_empty());
@@ -158,7 +161,7 @@ mod tests {
 
     #[test]
     fn valid_entry_states() {
-        let flow = ReprovisionFlow::new(vec![]);
+        let flow = ReprovisionFlow::new(vec![], vec![]);
         let states = flow.valid_entry_states();
         assert_eq!(states, &[VmState::Running]);
     }

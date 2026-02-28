@@ -108,18 +108,22 @@ pub enum FlowResult {
 // ── Flow selection ──────────────────────────────────────────────────
 
 /// Select the appropriate flow based on the command and current VM state.
+///
+/// `system_scripts` run only on first boot (and reprovision).
+/// `boot_scripts` run on every boot (first boot AND subsequent reboots).
 pub fn select_flow(
     command: &FlowCommand,
     state: &VmState,
-    scripts: Vec<String>,
+    system_scripts: Vec<String>,
+    boot_scripts: Vec<String>,
 ) -> Result<Box<dyn Flow>, RumError> {
     match command {
         FlowCommand::Up => match state {
             VmState::Virgin | VmState::ImageCached
             | VmState::Prepared | VmState::PartialBoot => {
-                Ok(Box::new(first_boot::FirstBootFlow::new(scripts)))
+                Ok(Box::new(first_boot::FirstBootFlow::new(system_scripts, boot_scripts)))
             }
-            VmState::Provisioned => Ok(Box::new(reboot::RebootFlow::new(scripts))),
+            VmState::Provisioned => Ok(Box::new(reboot::RebootFlow::new(boot_scripts))),
             VmState::Running => Ok(Box::new(reattach::ReattachFlow)),
             VmState::RunningStale => Err(RumError::RequiresRestart {
                 name: "VM".into(),
@@ -134,7 +138,7 @@ pub fn select_flow(
         }
         FlowCommand::Provision => {
             flow_requires_state(state, &[VmState::Running])?;
-            Ok(Box::new(reprovision::ReprovisionFlow::new(scripts)))
+            Ok(Box::new(reprovision::ReprovisionFlow::new(system_scripts, boot_scripts)))
         }
     }
 }
