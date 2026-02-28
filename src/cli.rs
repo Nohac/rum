@@ -1,12 +1,30 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+/// Output format selection for the CLI.
+#[derive(clap::ValueEnum, Clone, Debug, Default)]
+pub enum OutputFormat {
+    /// Auto-detect based on terminal (default)
+    #[default]
+    Auto,
+    /// Interactive TTY output with spinners
+    Interactive,
+    /// Plain text, no ANSI codes
+    Plain,
+    /// JSON-lines to stdout
+    Json,
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "rum", about = "Lightweight VM provisioning via libvirt")]
 pub struct Cli {
     /// Path to config file
     #[arg(short, long, default_value = "rum.toml")]
     pub config: PathBuf,
+
+    /// Output format: auto, interactive, plain, json
+    #[arg(short = 'o', long, default_value = "auto", global = true)]
+    pub output: OutputFormat,
 
     /// Enable verbose output
     #[arg(short, long)]

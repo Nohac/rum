@@ -7,7 +7,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 use rum::backend::{self, Backend};
-use rum::cli::{Cli, Command, ImageCommand};
+use rum::cli::{Cli, Command, ImageCommand, OutputFormat};
 use rum::config;
 use rum::logging;
 use rum::progress::OutputMode;
@@ -16,15 +16,7 @@ use rum::progress::OutputMode;
 async fn main() -> miette::Result<()> {
     let cli = Cli::parse();
 
-    let mode = if cli.quiet {
-        OutputMode::Quiet
-    } else if cli.verbose {
-        OutputMode::Verbose
-    } else if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
-        OutputMode::Plain
-    } else {
-        OutputMode::Normal
-    };
+    let mode = resolve_output_mode(&cli.output, cli.verbose, cli.quiet);
 
     // Terminal layer: suppress tracing when the progress UI manages the terminal
     // (Normal/Quiet). Tracing output to stderr corrupts indicatif's terminal
@@ -474,4 +466,52 @@ fn handle_log_command(
     }
 
     Ok(())
+}
+
+/// Map the CLI `--output` flag (plus `--verbose`/`--quiet` modifiers)
+/// into the internal `OutputMode` used by `StepProgress`.
+fn resolve_output_mode(format: &OutputFormat, verbose: bool, quiet: bool) -> OutputMode {
+    match format {
+        OutputFormat::Json => {
+            // JSON mode: always emit everything, ignore --verbose/--quiet.
+            // Map to Plain so StepProgress doesn't try ANSI/spinners; the
+            // observer layer handles actual JSON output.
+            if verbose || quiet {
+                eprintln!("warning: --verbose/--quiet ignored in JSON output mode");
+            }
+            OutputMode::Plain
+        }
+        OutputFormat::Plain => {
+            if quiet {
+                OutputMode::Quiet
+            } else if verbose {
+                OutputMode::Verbose
+            } else {
+                OutputMode::Plain
+            }
+        }
+        OutputFormat::Interactive => {
+            if quiet {
+                OutputMode::Quiet
+            } else if verbose {
+                OutputMode::Verbose
+            } else {
+                OutputMode::Normal
+            }
+        }
+        OutputFormat::Auto => {
+            // Original auto-detection logic
+            if quiet {
+                OutputMode::Quiet
+            } else if verbose {
+                OutputMode::Verbose
+            } else if !std::io::stdout().is_terminal()
+                || !std::io::stdin().is_terminal()
+            {
+                OutputMode::Plain
+            } else {
+                OutputMode::Normal
+            }
+        }
+    }
 }
