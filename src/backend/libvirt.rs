@@ -889,29 +889,10 @@ pub(crate) async fn shutdown_domain(dom: &Domain) -> Result<(), RumError> {
     Ok(())
 }
 
-/// Extract the auto-assigned vsock CID from the live domain XML.
-///
-/// After `dom.create()`, libvirt fills in the CID. The live XML contains
-/// something like `<cid auto="yes" address="3"/>` inside `<vsock>`.
+/// Extract the auto-assigned vsock CID from a running domain's live XML.
 fn parse_vsock_cid(dom: &Domain) -> Option<u32> {
     let xml = dom.get_xml_desc(0).ok()?;
-
-    // Find the <vsock section, then locate address='N' within it
-    let vsock_start = xml.find("<vsock")?;
-    let vsock_end = xml[vsock_start..].find("</vsock>").map(|i| vsock_start + i)?;
-    let vsock_section = &xml[vsock_start..vsock_end];
-
-    // Look for address="N" or address='N'
-    let addr_prefix = "address=\"";
-    let addr_start = vsock_section.find(addr_prefix).map(|i| i + addr_prefix.len())
-        .or_else(|| {
-            let alt = "address='";
-            vsock_section.find(alt).map(|i| i + alt.len())
-        })?;
-
-    let remaining = &vsock_section[addr_start..];
-    let addr_end = remaining.find(['"', '\''])?;
-    remaining[..addr_end].parse::<u32>().ok()
+    domain_xml::parse_vsock_cid(&xml)
 }
 
 /// Poll domain state until it's no longer running.

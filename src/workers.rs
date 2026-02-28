@@ -336,26 +336,10 @@ fn is_running(dom: &Domain) -> bool {
     dom.is_active().unwrap_or(false)
 }
 
-/// Extract the auto-assigned vsock CID from the live domain XML.
+/// Extract the auto-assigned vsock CID from a running domain's live XML.
 fn parse_vsock_cid(dom: &Domain) -> Option<u32> {
     let xml = dom.get_xml_desc(0).ok()?;
-
-    let vsock_start = xml.find("<vsock")?;
-    let vsock_end = xml[vsock_start..].find("</vsock>").map(|i| vsock_start + i)?;
-    let vsock_section = &xml[vsock_start..vsock_end];
-
-    let addr_prefix = "address=\"";
-    let addr_start = vsock_section
-        .find(addr_prefix)
-        .map(|i| i + addr_prefix.len())
-        .or_else(|| {
-            let alt = "address='";
-            vsock_section.find(alt).map(|i| i + alt.len())
-        })?;
-
-    let remaining = &vsock_section[addr_start..];
-    let addr_end = remaining.find(['"', '\''])?;
-    remaining[..addr_end].parse::<u32>().ok()
+    domain_xml::parse_vsock_cid(&xml)
 }
 
 fn ensure_network_active(conn: &Connect, name: &str) -> Result<Network, RumError> {

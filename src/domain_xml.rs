@@ -231,6 +231,29 @@ struct VsockCid {
     auto: String,
 }
 
+// ── vsock deserialization (live XML) ─────────────────────
+
+/// Deserialization struct for the `<vsock>` element in live domain XML.
+///
+/// Live XML includes an `address` attribute on `<cid>` that is not present
+/// in the generation struct (since libvirt auto-assigns the CID).
+#[derive(Debug, Facet)]
+#[facet(rename = "vsock")]
+struct LiveVsock {
+    #[facet(xml::attribute)]
+    model: String,
+    cid: LiveVsockCid,
+}
+
+#[derive(Debug, Default, Facet)]
+#[facet(default)]
+struct LiveVsockCid {
+    #[facet(xml::attribute)]
+    auto: String,
+    #[facet(xml::attribute, default)]
+    address: Option<String>,
+}
+
 // ── serial / console ───────────────────────────────────────
 
 #[derive(Debug, Facet)]
@@ -466,6 +489,21 @@ pub fn generate_domain_xml(
     facet_xml::to_string(&domain).expect("domain XML serialization should not fail")
 }
 
+/// Extract the auto-assigned vsock CID from a full domain XML string.
+///
+/// Locates the `<vsock>...</vsock>` section in the XML, deserializes it
+/// with `facet_xml::from_str()`, and returns the CID if present.
+pub fn parse_vsock_cid(domain_xml: &str) -> Option<u32> {
+    let vsock_start = domain_xml.find("<vsock")?;
+    let vsock_end = domain_xml[vsock_start..]
+        .find("</vsock>")
+        .map(|i| vsock_start + i + "</vsock>".len())?;
+    let vsock_section = &domain_xml[vsock_start..vsock_end];
+
+    let live: LiveVsock = xml::from_str(vsock_section).ok()?;
+    live.cid.address.as_deref()?.parse::<u32>().ok()
+}
+
 /// Check if the generated XML differs from the saved XML on disk.
 pub fn xml_has_changed(
     sys_config: &SystemConfig,
@@ -662,5 +700,37 @@ memory_mb = 512
         let mac0 = generate_mac("test-vm", 0);
         let mac1 = generate_mac("test-vm", 1);
         assert_ne!(mac0, mac1);
+    }
+
+    #[test]
+    fn parse_vsock_cid_from_live_xml() {
+        let xml = r#"<domain type="kvm">
+  <name>test-vm</name>
+  <devices>
+    <vsock model="virtio">
+      <cid auto="yes" address="3"/>
+      <alias name="vsock0"/>
+    </vsock>
+  </devices>
+</domain>"#;
+        assert_eq!(parse_vsock_cid(xml), Some(3));
+    }
+
+    #[test]
+    fn parse_vsock_cid_no_address() {
+        let xml = r#"<domain type="kvm">
+  <devices>
+    <vsock model="virtio">
+      <cid auto="yes"/>
+    </vsock>
+  </devices>
+</domain>"#;
+        assert_eq!(parse_vsock_cid(xml), None);
+    }
+
+    #[test]
+    fn parse_vsock_cid_no_vsock_section() {
+        let xml = r#"<domain type="kvm"><name>test</name></domain>"#;
+        assert_eq!(parse_vsock_cid(xml), None);
     }
 }
