@@ -1,6 +1,6 @@
 # rum exec prints agent readiness log line to stdout
 
-**ID:** 58f9c7da | **Status:** Open | **Created:** 2026-02-24T20:41:07+01:00
+**ID:** 58f9c7da | **Status:** Done | **Created:** 2026-02-24T20:41:07+01:00
 
 Every `rum exec` invocation prints an agent readiness log line before the actual command output:
 ```

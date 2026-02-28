@@ -69,7 +69,7 @@ pub async fn wait_for_agent(cid: u32) -> Result<AgentClient, RumError> {
     loop {
         match service.ping().await {
             Ok(resp) => {
-                tracing::info!(
+                tracing::debug!(
                     version = %resp.version,
                     hostname = %resp.hostname,
                     "agent ready"
