@@ -27,6 +27,10 @@ impl Flow for ReprovisionFlow {
         &[VmState::Running]
     }
 
+    fn expected_steps(&self, _entry_state: &VmState) -> usize {
+        self.scripts.len()
+    }
+
     fn transition(&self, state: &VmState, event: &Event) -> (VmState, Vec<Effect>) {
         match (state, event) {
             // ── FlowStarted → run first script or no-op ──

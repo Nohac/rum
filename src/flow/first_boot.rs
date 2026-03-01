@@ -27,6 +27,17 @@ impl Flow for FirstBootFlow {
         &[VmState::Virgin, VmState::ImageCached, VmState::Prepared, VmState::PartialBoot]
     }
 
+    fn expected_steps(&self, entry_state: &VmState) -> usize {
+        let scripts = self.scripts.len();
+        match entry_state {
+            // image + prepare + boot + scripts + ready
+            VmState::Virgin | VmState::ImageCached => 4 + scripts,
+            // boot + scripts + ready
+            VmState::Prepared | VmState::PartialBoot => 2 + scripts,
+            _ => 1,
+        }
+    }
+
     fn transition(&self, state: &VmState, event: &Event) -> (VmState, Vec<Effect>) {
         match (state, event) {
             // ── FlowStarted from various entry states ──

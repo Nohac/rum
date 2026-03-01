@@ -10,6 +10,10 @@ impl Flow for ReattachFlow {
         &[VmState::Running]
     }
 
+    fn expected_steps(&self, _entry_state: &VmState) -> usize {
+        1 // ready
+    }
+
     fn transition(&self, state: &VmState, event: &Event) -> (VmState, Vec<Effect>) {
         match (state, event) {
             // ── FlowStarted → start services (log sub, port forwards) ──

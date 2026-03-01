@@ -201,7 +201,7 @@ pub async fn run_provision(
     scripts: Vec<rum_agent::ProvisionScript>,
     logs_dir: &Path,
 ) -> Result<(), RumError> {
-    let mut progress = StepProgress::new(scripts.len(), OutputMode::Quiet);
+    let mut progress = StepProgress::new(scripts.len(), OutputMode::Silent);
     crate::agent::run_provision(agent, scripts, &mut progress, logs_dir).await
 }
 

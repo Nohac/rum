@@ -1,18 +1,26 @@
 //! Interactive TTY observer — spinners, progress bars, colored output.
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
+use console::{Term, truncate_str};
+
 use crate::flow::Event;
-use crate::vm_state::VmState;
 
 use super::{EffectData, Observer, Transition};
+
+const MAX_LOG_LINES: usize = 10;
 
 /// Shared mutable state for the interactive observer.
 struct ObserverState {
     step: usize,
     total_steps: usize,
+    /// Number of log lines currently drawn in the terminal's active area.
+    /// Used by the stream handler to erase log lines before the transition
+    /// handler prints the completion checkmark.
+    drawn_log_lines: usize,
 }
 
 /// Interactive TTY observer with step-based progress output.
@@ -21,6 +29,7 @@ struct ObserverState {
 #[derive(Clone)]
 pub struct InteractiveObserver {
     state: Arc<Mutex<ObserverState>>,
+    term: Term,
 }
 
 impl InteractiveObserver {
@@ -33,7 +42,9 @@ impl InteractiveObserver {
             state: Arc::new(Mutex::new(ObserverState {
                 step: 0,
                 total_steps,
+                drawn_log_lines: 0,
             })),
+            term: Term::stderr(),
         }
     }
 
@@ -43,6 +54,16 @@ impl InteractiveObserver {
         state.step += 1;
         format!("[{}/{}]", state.step, state.total_steps)
     }
+
+    /// Clear any log lines currently drawn in the active area.
+    fn clear_log_area(&self) {
+        let mut state = self.state.lock().unwrap();
+        if state.drawn_log_lines > 0 {
+            self.term.move_cursor_up(state.drawn_log_lines).ok();
+            self.term.clear_to_end_of_screen().ok();
+            state.drawn_log_lines = 0;
+        }
+    }
 }
 
 impl Observer for InteractiveObserver {
@@ -50,31 +71,34 @@ impl Observer for InteractiveObserver {
         &mut self,
         t: &Transition,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        let message = match (&t.old_state, &t.new_state, &t.event) {
-            (_, VmState::Prepared, _) => {
+        // Clear any leftover log lines before printing the step completion.
+        self.clear_log_area();
+
+        let message = match &t.event {
+            Event::ImageReady(_) => {
+                Some(format!("{} \u{2713} Base image ready", self.next_step()))
+            }
+            Event::VmPrepared => {
                 Some(format!("{} \u{2713} VM prepared", self.next_step()))
             }
-            (_, VmState::PartialBoot, Event::DomainStarted) => {
+            Event::DomainStarted => {
                 Some(format!("{} \u{2713} VM booted", self.next_step()))
             }
-            (_, VmState::Running, _) => {
-                Some(format!("{} \u{2713} Ready", self.next_step()))
-            }
-            (_, VmState::Provisioned, Event::ShutdownComplete) => {
-                Some(format!("{} \u{2713} Shut down", self.next_step()))
-            }
-            (_, _, Event::ScriptCompleted { name }) => {
+            Event::ScriptCompleted { name } => {
                 Some(format!("{} \u{2713} {}", self.next_step(), name))
             }
-            (_, _, Event::ImageReady(_)) => {
-                Some(format!("{} \u{2713} Base image ready", self.next_step()))
+            Event::ServicesStarted => {
+                Some(format!("{} \u{2713} Ready", self.next_step()))
+            }
+            Event::ShutdownComplete => {
+                Some(format!("{} \u{2713} Shut down", self.next_step()))
             }
             _ => None,
         };
 
         Box::pin(async move {
             if let Some(msg) = message {
-                eprintln!("{msg}");
+                self.term.write_line(&msg).ok();
             }
         })
     }
@@ -85,6 +109,8 @@ impl Observer for InteractiveObserver {
         mut rx: roam::Rx<EffectData>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         let stream_name = name.to_string();
+        let state = self.state.clone();
+        let term = self.term.clone();
         Box::pin(async move {
             if stream_name == "image_download" {
                 while let Ok(Some(data)) = rx.recv().await {
@@ -97,10 +123,40 @@ impl Observer for InteractiveObserver {
                 }
                 eprintln!(); // newline after progress
             } else if stream_name.starts_with("script:") {
+                let mut log_lines: VecDeque<String> = VecDeque::new();
+                let width = (term.size().1 as usize).max(1);
+
                 while let Ok(Some(data)) = rx.recv().await {
                     if let EffectData::LogLine(line) = data {
-                        eprintln!("  | {line}");
+                        if log_lines.len() >= MAX_LOG_LINES {
+                            log_lines.pop_front();
+                        }
+                        log_lines.push_back(line);
+
+                        // Erase previously drawn lines
+                        let mut st = state.lock().unwrap();
+                        if st.drawn_log_lines > 0 {
+                            term.move_cursor_up(st.drawn_log_lines).ok();
+                            term.clear_to_end_of_screen().ok();
+                        }
+
+                        // Redraw log lines
+                        for l in &log_lines {
+                            let display = format!("        {l}");
+                            term.write_line(&truncate_str(&display, width, "\u{2026}"))
+                                .ok();
+                        }
+                        st.drawn_log_lines = log_lines.len();
                     }
+                }
+
+                // Stream closed — clear log area so the transition handler
+                // can print the completion checkmark cleanly.
+                let mut st = state.lock().unwrap();
+                if st.drawn_log_lines > 0 {
+                    term.move_cursor_up(st.drawn_log_lines).ok();
+                    term.clear_to_end_of_screen().ok();
+                    st.drawn_log_lines = 0;
                 }
             }
             // Unknown streams: silently drain

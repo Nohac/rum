@@ -95,6 +95,13 @@ pub trait Flow: Send {
     /// Unknown events should return the current state unchanged with no
     /// effects (log a warning).
     fn transition(&self, state: &VmState, event: &Event) -> (VmState, Vec<Effect>);
+
+    /// Expected number of observable steps for this flow.
+    ///
+    /// Used by observers for `[N/M]` progress display. Counts only
+    /// user-visible milestones (image ready, prepared, booted, each script,
+    /// ready/shutdown), not internal transitions.
+    fn expected_steps(&self, entry_state: &VmState) -> usize;
 }
 
 /// Result of running a flow to completion.

@@ -18,6 +18,13 @@ impl Flow for DestroyFlow {
         ]
     }
 
+    fn expected_steps(&self, entry_state: &VmState) -> usize {
+        match entry_state {
+            VmState::Running | VmState::RunningStale => 2, // destroy + cleanup
+            _ => 1, // cleanup only
+        }
+    }
+
     fn transition(&self, state: &VmState, event: &Event) -> (VmState, Vec<Effect>) {
         match (state, event) {
             // ── FlowStarted: running VMs need force-destroy first ──

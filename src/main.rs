@@ -1,6 +1,7 @@
 use std::io::IsTerminal;
 
 use clap::Parser;
+use tokio::sync::{broadcast, mpsc};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
@@ -9,21 +10,25 @@ use tracing_subscriber::util::SubscriberInitExt;
 use rum::backend::{self, Backend};
 use rum::cli::{Cli, Command, ImageCommand, OutputFormat};
 use rum::config;
+use rum::flow::{self, FlowCommand};
+use rum::flow::event_loop::{FlowContext, run_event_loop};
 use rum::logging;
+use rum::observer;
 use rum::progress::OutputMode;
 
 #[tokio::main]
 async fn main() -> miette::Result<()> {
     let cli = Cli::parse();
 
-    let mode = resolve_output_mode(&cli.output, cli.verbose, cli.quiet);
+    let output_format = resolve_output_format(&cli.output);
+    let mode = resolve_output_mode(&output_format, cli.verbose, cli.quiet);
 
     // Terminal layer: suppress tracing when the progress UI manages the terminal
     // (Normal/Quiet). Tracing output to stderr corrupts indicatif's terminal
     // line tracking, causing redraws to clear completed steps.
     let terminal_filter = match mode {
         OutputMode::Verbose => EnvFilter::new("debug"),
-        OutputMode::Normal | OutputMode::Quiet => EnvFilter::new("off"),
+        OutputMode::Normal | OutputMode::Quiet | OutputMode::Silent => EnvFilter::new("off"),
         OutputMode::Plain => EnvFilter::from_default_env()
             .add_directive("rum=info".parse().expect("valid log directive")),
     };
@@ -98,10 +103,7 @@ async fn main() -> miette::Result<()> {
             unreachable!()
         }
         Command::Up { reset, detach } => {
-            let effective_detach = detach || mode == OutputMode::Plain;
-            backend
-                .up(&sys_config, reset, effective_detach, mode)
-                .await?
+            run_up(&sys_config, reset, detach, &output_format).await?
         }
         Command::Down => {
             let client = rum::daemon::connect(&sys_config)?;
@@ -125,30 +127,36 @@ async fn main() -> miette::Result<()> {
         Command::Status => {
             let vm_name = sys_config.display_name();
 
-            match rum::daemon::connect(&sys_config) {
+            let info = match rum::daemon::connect(&sys_config) {
                 Ok(client) => {
-                    let info = client
+                    client
                         .status()
                         .await
                         .map_err(|e| rum::error::RumError::Daemon {
                             message: e.to_string(),
-                        })?;
-
-                    println!("VM '{vm_name}': {}", info.state);
-                    for ip in &info.ips {
-                        println!("  IP: {ip}");
-                    }
-                    if info.daemon_running {
-                        println!("  Daemon: running");
-                    }
+                        })?
                 }
-                Err(_) => {
-                    // No daemon — do an offline status check via libvirt
-                    let info = offline_status(&sys_config);
-                    println!("VM '{vm_name}': {}", info.state);
-                    for ip in &info.ips {
-                        println!("  IP: {ip}");
-                    }
+                Err(_) => offline_status(&sys_config),
+            };
+
+            if matches!(output_format, OutputFormat::Json) {
+                println!(
+                    "{}",
+                    facet_json::to_string(&StatusJson {
+                        name: vm_name.to_string(),
+                        state: info.state,
+                        ips: info.ips,
+                        daemon: info.daemon_running,
+                    })
+                    .expect("JSON serialization"),
+                );
+            } else {
+                println!("VM '{vm_name}': {}", info.state);
+                for ip in &info.ips {
+                    println!("  IP: {ip}");
+                }
+                if info.daemon_running {
+                    println!("  Daemon: running");
                 }
             }
         }
@@ -174,6 +182,13 @@ async fn main() -> miette::Result<()> {
             let command = args.join(" ");
             let cid = rum::backend::libvirt::get_vsock_cid(&sys_config)?;
             let exit_code = rum::agent::run_exec(cid, command).await?;
+            if matches!(output_format, OutputFormat::Json) {
+                println!(
+                    "{}",
+                    facet_json::to_string(&ExecJson { exit_code })
+                    .expect("JSON serialization"),
+                );
+            }
             std::process::exit(exit_code);
         }
         Command::Cp { src, dst } => {
@@ -279,6 +294,178 @@ async fn main() -> miette::Result<()> {
             cloudinit::generate_seed_iso(&seed_path, &seed_config).await?;
             println!("Wrote seed ISO to {}", seed_path.display());
         }
+    }
+
+    Ok(())
+}
+
+/// Build provision script names from config (matching names used by flows).
+fn build_script_names(sys_config: &rum::config::SystemConfig) -> (Vec<String>, Vec<String>) {
+    let config = &sys_config.config;
+    let drives = sys_config.resolve_drives().unwrap_or_default();
+    let resolved_fs = sys_config.resolve_fs(&drives).unwrap_or_default();
+
+    let mut system_scripts = Vec::new();
+    if !resolved_fs.is_empty() {
+        system_scripts.push("rum-drives".to_string());
+    }
+    if config.provision.system.is_some() {
+        system_scripts.push("rum-system".to_string());
+    }
+
+    let mut boot_scripts = Vec::new();
+    if config.provision.boot.is_some() {
+        boot_scripts.push("rum-boot".to_string());
+    }
+
+    (system_scripts, boot_scripts)
+}
+
+/// Run `rum up` through the event loop + observer pipeline.
+async fn run_up(
+    sys_config: &rum::config::SystemConfig,
+    reset: bool,
+    detach: bool,
+    output_format: &OutputFormat,
+) -> Result<(), rum::error::RumError> {
+    // --reset: wipe artifacts first
+    if reset {
+        rum::workers::destroy_vm(sys_config).await.ok();
+    }
+
+    // Detect current VM state
+    let initial_state = {
+        virt::error::clear_error_callback();
+        match virt::connect::Connect::open(Some(sys_config.libvirt_uri())) {
+            Ok(mut conn) => {
+                let state = rum::vm_state::detect_state(sys_config, &conn);
+                conn.close().ok();
+                state
+            }
+            Err(_) => rum::vm_state::VmState::Virgin,
+        }
+    };
+
+    // Build script names and select flow
+    let (system_scripts, boot_scripts) = build_script_names(sys_config);
+    let flow = flow::select_flow(&FlowCommand::Up, &initial_state, system_scripts, boot_scripts)?;
+    let total_steps = flow.expected_steps(&initial_state);
+
+    // Create channels
+    let (cmd_tx, cmd_rx) = mpsc::channel(16);
+    let (transition_tx, _) = broadcast::channel(64);
+    let (effect_stream_tx, mut effect_stream_rx) = mpsc::unbounded_channel();
+
+    // Create observer from output format
+    let mut obs: Box<dyn observer::Observer> = match output_format {
+        OutputFormat::Json => Box::new(observer::json::JsonObserver::new()),
+        OutputFormat::Plain => Box::new(observer::plain::PlainObserver::new(total_steps)),
+        OutputFormat::Interactive | OutputFormat::Auto => {
+            Box::new(observer::interactive::InteractiveObserver::new(total_steps))
+        }
+    };
+
+    // Subscribe observer before starting event loop (so no transitions are missed)
+    let mut transition_rx = transition_tx.subscribe();
+
+    // Spawn effect stream driver — receives new streams from workers and
+    // drives them through observer clones concurrently.
+    let stream_observer = obs.clone_for_stream();
+    let effect_driver = tokio::spawn(async move {
+        use futures_util::stream::FuturesUnordered;
+        use futures_util::StreamExt as _;
+
+        let mut stream_tasks: FuturesUnordered<tokio::task::JoinHandle<()>> =
+            FuturesUnordered::new();
+        let obs = stream_observer;
+
+        loop {
+            tokio::select! {
+                handle = effect_stream_rx.recv() => {
+                    let Some(handle): Option<rum::flow::event_loop::EffectStreamHandle> = handle else { break };
+                    let mut stream_obs = obs.clone_for_stream();
+                    let name = handle.name;
+                    let rx = handle.rx;
+                    stream_tasks.push(tokio::spawn(async move {
+                        stream_obs.on_effect_stream(&name, rx).await;
+                    }));
+                }
+                Some(_) = stream_tasks.next() => {
+                    // Stream task completed, continue
+                }
+            }
+        }
+
+        // Drain remaining stream tasks
+        while stream_tasks.next().await.is_some() {}
+    });
+
+    // Run event loop in a spawned task, observer in the foreground.
+    let mut ctx = FlowContext::new(sys_config.clone(), cmd_rx, transition_tx, effect_stream_tx);
+    let event_loop_handle = tokio::spawn(async move {
+        run_event_loop(flow, initial_state, &mut ctx).await
+    });
+
+    if detach {
+        // Detach mode: observe transitions until VM reaches Running state,
+        // then exit. No Ctrl+C handling needed.
+        loop {
+            match transition_rx.recv().await {
+                Ok(t) => {
+                    obs.on_transition(&t).await;
+                    if matches!(t.new_state, rum::vm_state::VmState::Running) {
+                        break;
+                    }
+                    if t.new_state.is_terminal() {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("observer lagged, missed {n} transitions");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+
+        // Drop command sender so event loop exits its interactive wait
+        drop(cmd_tx);
+    } else {
+        // Attached mode: observe + handle Ctrl+C for graceful shutdown.
+        let obs_result = observer::run_attached_client(
+            &mut transition_rx,
+            &cmd_tx,
+            &mut *obs,
+        ).await;
+
+        // Drop the command sender so the event loop can exit
+        drop(cmd_tx);
+        obs_result?;
+    }
+
+    // Wait for the event loop to finish
+    let final_state = event_loop_handle.await
+        .map_err(|e| rum::error::RumError::Daemon {
+            message: format!("event loop panicked: {e}"),
+        })??;
+
+    // Wait for effect streams to drain
+    let _ = effect_driver.await;
+
+    // Handle detach mode: spawn background daemon
+    if detach {
+        if !rum::daemon::is_daemon_running(sys_config) {
+            rum::daemon::spawn_background(sys_config)?;
+            rum::daemon::wait_for_daemon_ready(sys_config).await?;
+        }
+        eprintln!("VM is running (detached). Use `rum down` to stop.");
+    }
+
+    // Write provisioned marker if we completed a first boot successfully
+    let marker = rum::paths::provisioned_marker(&sys_config.id, sys_config.name.as_deref());
+    if matches!(final_state, rum::vm_state::VmState::Running | rum::vm_state::VmState::Provisioned)
+        && !marker.exists()
+    {
+        let _ = tokio::fs::write(&marker, b"").await;
     }
 
     Ok(())
@@ -468,7 +655,36 @@ fn handle_log_command(
     Ok(())
 }
 
-/// Map the CLI `--output` flag (plus `--verbose`/`--quiet` modifiers)
+// ── JSON output structs ─────────────────────────────────────────────
+
+#[derive(facet::Facet)]
+struct StatusJson {
+    name: String,
+    state: String,
+    ips: Vec<String>,
+    daemon: bool,
+}
+
+#[derive(facet::Facet)]
+struct ExecJson {
+    exit_code: i32,
+}
+
+/// Resolve `Auto` to a concrete format based on terminal detection.
+fn resolve_output_format(format: &OutputFormat) -> OutputFormat {
+    match format {
+        OutputFormat::Auto => {
+            if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
+                OutputFormat::Plain
+            } else {
+                OutputFormat::Interactive
+            }
+        }
+        other => other.clone(),
+    }
+}
+
+/// Map the resolved output format (plus `--verbose`/`--quiet` modifiers)
 /// into the internal `OutputMode` used by `StepProgress`.
 fn resolve_output_mode(format: &OutputFormat, verbose: bool, quiet: bool) -> OutputMode {
     match format {
@@ -500,18 +716,8 @@ fn resolve_output_mode(format: &OutputFormat, verbose: bool, quiet: bool) -> Out
             }
         }
         OutputFormat::Auto => {
-            // Original auto-detection logic
-            if quiet {
-                OutputMode::Quiet
-            } else if verbose {
-                OutputMode::Verbose
-            } else if !std::io::stdout().is_terminal()
-                || !std::io::stdin().is_terminal()
-            {
-                OutputMode::Plain
-            } else {
-                OutputMode::Normal
-            }
+            // Already resolved by resolve_output_format, but handle defensively
+            OutputMode::Normal
         }
     }
 }

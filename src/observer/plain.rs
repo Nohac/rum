@@ -4,7 +4,6 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::flow::Event;
-use crate::vm_state::VmState;
 
 use super::{EffectData, Observer, Transition};
 
@@ -37,27 +36,24 @@ impl Observer for PlainObserver {
         &mut self,
         t: &Transition,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        let message = match (&t.old_state, &t.new_state, &t.event) {
-            (_, _, Event::ImageReady(_)) => {
+        let message = match &t.event {
+            Event::ImageReady(_) => {
                 Some(format!("{} Base image ready", self.next_step()))
             }
-            (_, VmState::Prepared, _) => {
+            Event::VmPrepared => {
                 Some(format!("{} VM prepared", self.next_step()))
             }
-            (_, VmState::PartialBoot, Event::DomainStarted) => {
+            Event::DomainStarted => {
                 Some(format!("{} VM booted", self.next_step()))
             }
-            (_, VmState::Running, _) => {
-                Some(format!("{} Ready", self.next_step()))
-            }
-            (_, VmState::Provisioned, Event::ShutdownComplete) => {
-                Some(format!("{} Shut down", self.next_step()))
-            }
-            (_, _, Event::ScriptCompleted { name }) => {
+            Event::ScriptCompleted { name } => {
                 Some(format!("{} {}", self.next_step(), name))
             }
-            (_, _, Event::AllScriptsComplete) => {
-                Some(format!("{} Provisioning complete", self.next_step()))
+            Event::ServicesStarted => {
+                Some(format!("{} Ready", self.next_step()))
+            }
+            Event::ShutdownComplete => {
+                Some(format!("{} Shut down", self.next_step()))
             }
             _ => None,
         };

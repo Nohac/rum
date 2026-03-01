@@ -45,6 +45,14 @@ impl VmState {
     pub fn is_terminal(self) -> bool {
         matches!(self, VmState::Virgin)
     }
+
+    /// States where the event loop should park and wait for client commands
+    /// (e.g., Ctrl+C → InitShutdown). When workers complete and the flow
+    /// reaches one of these states with no pending effects, the event loop
+    /// should NOT exit — it should wait for external commands.
+    pub fn is_interactive_wait(self) -> bool {
+        matches!(self, VmState::Running | VmState::RunningStale)
+    }
 }
 
 /// Reconstruct the current VM state from artifacts + libvirt.

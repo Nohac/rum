@@ -15,6 +15,9 @@ pub enum OutputMode {
     Quiet,
     /// No ANSI — plain println output (for piped/non-TTY).
     Plain,
+    /// Completely silent — no terminal output at all.
+    /// Used by event-loop workers where the observer handles all UI.
+    Silent,
 }
 
 const MAX_LOG_LINES: usize = 10;
@@ -116,6 +119,25 @@ impl StepProgress {
         Fut: Future<Output = T>,
     {
         self.current_step += 1;
+
+        // Silent mode: run the closure with a no-op Step, zero UI.
+        if self.mode == OutputMode::Silent {
+            let state = Arc::new(Mutex::new(StepState {
+                log_lines: VecDeque::new(),
+                done_label: None,
+                failed: false,
+                drawn_lines: 0,
+                label: label.to_string(),
+                prefix: String::new(),
+                spinner_frame: 0,
+            }));
+            let step = Step {
+                state,
+                mode: self.mode,
+            };
+            return f(step).await;
+        }
+
         let prefix = format!("{}/{}", self.current_step, self.total_steps);
 
         if self.mode == OutputMode::Plain {
@@ -275,6 +297,9 @@ impl StepProgress {
     /// Instant completion — no task to run (cached/skipped items).
     pub fn skip(&mut self, label: &str) {
         self.current_step += 1;
+        if self.mode == OutputMode::Silent {
+            return;
+        }
         let prefix = format!("{}/{}", self.current_step, self.total_steps);
 
         if self.mode == OutputMode::Plain {
@@ -291,6 +316,9 @@ impl StepProgress {
 
     /// Print an info line (port forwards, etc.).
     pub fn info(&self, text: &str) {
+        if self.mode == OutputMode::Silent {
+            return;
+        }
         if self.mode == OutputMode::Plain {
             println!("      \u{2192} {text}");
         } else {
@@ -302,6 +330,9 @@ impl StepProgress {
 
     /// Print a plain line (final messages).
     pub fn println(&self, text: &str) {
+        if self.mode == OutputMode::Silent {
+            return;
+        }
         if self.mode == OutputMode::Plain {
             println!("{text}");
         } else {
@@ -312,7 +343,7 @@ impl StepProgress {
 
 impl Drop for StepProgress {
     fn drop(&mut self) {
-        if self.mode != OutputMode::Plain {
+        if self.mode != OutputMode::Plain && self.mode != OutputMode::Silent {
             self.term.show_cursor().ok();
         }
     }
@@ -321,7 +352,7 @@ impl Drop for StepProgress {
 impl Step {
     /// Add a log line under this step (ring buffer of ~10).
     pub fn log(&self, line: &str) {
-        if self.mode == OutputMode::Quiet {
+        if self.mode == OutputMode::Quiet || self.mode == OutputMode::Silent {
             return;
         }
 

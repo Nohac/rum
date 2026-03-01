@@ -10,6 +10,10 @@ impl Flow for ShutdownFlow {
         &[VmState::Running, VmState::RunningStale]
     }
 
+    fn expected_steps(&self, _entry_state: &VmState) -> usize {
+        1 // shutdown
+    }
+
     fn transition(&self, state: &VmState, event: &Event) -> (VmState, Vec<Effect>) {
         match (state, event) {
             // ── FlowStarted → initiate ACPI shutdown ──
