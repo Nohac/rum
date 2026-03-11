@@ -30,8 +30,21 @@ ssh-key = { version = "0.6", features = ["ed25519", "rand_core", "getrandom"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 rum-agent = { path = "rum-agent", artifact = "bin", lib = true, target = "x86_64-unknown-linux-musl" }
 tokio-vsock = "0.7"
+tokio-util = { version = "0.7", features = ["codec"] }
 roam = "0.6"
 roam-stream = "0.6"
+bevy = { version = "0.18", default-features = false, features = ["multi_threaded", "bevy_state", "serialize"] }
+serde = { version = "1.0", features = ["derive"] }
+seldom_state = { git = "https://github.com/Wiwip/seldom_state.git", rev = "cc6c89f" }
+bevy_replicon = { version = "0.39", default-features = false, features = ["server", "client"] }
+interprocess = { version = "2.4", features = ["tokio"] }
+ecsdk_core = { path = "/home/jonas/Development/Rust/ecstest/crates/ecsdk_core" }
+ecsdk_app = { path = "/home/jonas/Development/Rust/ecstest/crates/ecsdk_app" }
+ecsdk_tasks = { path = "/home/jonas/Development/Rust/ecstest/crates/ecsdk_tasks" }
+ecsdk_macros = { path = "/home/jonas/Development/Rust/ecstest/crates/ecsdk_macros" }
+ecsdk_replicon = { path = "/home/jonas/Development/Rust/ecstest/crates/ecsdk_replicon" }
+ecsdk_replicon_transport = { path = "/home/jonas/Development/Rust/ecstest/crates/ecsdk_replicon_transport" }
+ecsdk_tracing = { path = "/home/jonas/Development/Rust/ecstest/crates/ecsdk_tracing" }
 
 [dev-dependencies]
 assert_cmd = "2"

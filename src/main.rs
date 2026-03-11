@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 
 use clap::Parser;
-use tokio::sync::{broadcast, mpsc};
+use ecsdk_core::MessageQueue;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
@@ -10,11 +10,12 @@ use tracing_subscriber::util::SubscriberInitExt;
 use rum::backend::{self, Backend};
 use rum::cli::{Cli, Command, ImageCommand, OutputFormat};
 use rum::config;
-use rum::flow::{self, FlowCommand};
-use rum::flow::event_loop::{FlowContext, run_event_loop};
+use rum::lifecycle::{LifecyclePlugin, RumMessage, SpawnVmData};
+use rum::phase::{FlowIntent, VmPhase};
+use rum::render::RumRenderPlugin;
 use rum::logging;
-use rum::observer;
 use rum::progress::OutputMode;
+use rum::vm_state::VmState;
 
 #[tokio::main]
 async fn main() -> miette::Result<()> {
@@ -321,11 +322,42 @@ fn build_script_names(sys_config: &rum::config::SystemConfig) -> (Vec<String>, V
     (system_scripts, boot_scripts)
 }
 
-/// Run `rum up` through the event loop + observer pipeline.
+/// Select the ECS flow intent and initial phase from detected VM state.
+fn select_intent(
+    state: &VmState,
+    system_scripts: Vec<String>,
+    boot_scripts: Vec<String>,
+) -> Result<(FlowIntent, VmPhase, Vec<String>, usize), rum::error::RumError> {
+    match state {
+        VmState::Virgin | VmState::ImageCached | VmState::Prepared | VmState::PartialBoot => {
+            let mut scripts = system_scripts;
+            scripts.extend(boot_scripts);
+            let total = match state {
+                VmState::Virgin | VmState::ImageCached => 4 + scripts.len(),
+                VmState::Prepared | VmState::PartialBoot => 2 + scripts.len(),
+                _ => 1,
+            };
+            let initial_phase = VmPhase::from_vm_state(*state, FlowIntent::FirstBoot);
+            Ok((FlowIntent::FirstBoot, initial_phase, scripts, total))
+        }
+        VmState::Provisioned => {
+            let total = 2 + boot_scripts.len();
+            Ok((FlowIntent::Reboot, VmPhase::Booting, boot_scripts, total))
+        }
+        VmState::Running => {
+            Ok((FlowIntent::Reattach, VmPhase::StartingServices, vec![], 1))
+        }
+        VmState::RunningStale => Err(rum::error::RumError::RequiresRestart {
+            name: "VM".into(),
+        }),
+    }
+}
+
+/// Run `rum up` through the ECS app.
 async fn run_up(
     sys_config: &rum::config::SystemConfig,
     reset: bool,
-    detach: bool,
+    _detach: bool,
     output_format: &OutputFormat,
 ) -> Result<(), rum::error::RumError> {
     // --reset: wipe artifacts first
@@ -342,130 +374,54 @@ async fn run_up(
                 conn.close().ok();
                 state
             }
-            Err(_) => rum::vm_state::VmState::Virgin,
+            Err(_) => VmState::Virgin,
         }
     };
 
-    // Build script names and select flow
+    // Build script names and select intent
     let (system_scripts, boot_scripts) = build_script_names(sys_config);
-    let flow = flow::select_flow(&FlowCommand::Up, &initial_state, system_scripts, boot_scripts)?;
-    let total_steps = flow.expected_steps(&initial_state);
+    let (intent, initial_phase, scripts, total_steps) =
+        select_intent(&initial_state, system_scripts, boot_scripts)?;
 
-    // Create channels
-    let (cmd_tx, cmd_rx) = mpsc::channel(16);
-    let (transition_tx, _) = broadcast::channel(64);
-    let (effect_stream_tx, mut effect_stream_rx) = mpsc::unbounded_channel();
+    // Set up ECS app
+    let (mut app, rx) = ecsdk_app::setup::<RumMessage>();
+    app.add_plugins(LifecyclePlugin);
+    app.add_plugins(RumRenderPlugin(output_format.clone()));
 
-    // Create observer from output format
-    let mut obs: Box<dyn observer::Observer> = match output_format {
-        OutputFormat::Json => Box::new(observer::json::JsonObserver::new()),
-        OutputFormat::Plain => Box::new(observer::plain::PlainObserver::new(total_steps)),
-        OutputFormat::Interactive | OutputFormat::Auto => {
-            Box::new(observer::interactive::InteractiveObserver::new(total_steps))
-        }
-    };
+    // Send the SpawnVm message to kick off the state machine
+    let state_queue = app.world().resource::<MessageQueue<RumMessage>>().clone();
+    state_queue.send(RumMessage::SpawnVm(Box::new(SpawnVmData {
+        sys_config: sys_config.clone(),
+        intent,
+        initial_phase,
+        scripts,
+        total_steps,
+    })));
 
-    // Subscribe observer before starting event loop (so no transitions are missed)
-    let mut transition_rx = transition_tx.subscribe();
-
-    // Spawn effect stream driver — receives new streams from workers and
-    // drives them through observer clones concurrently.
-    let stream_observer = obs.clone_for_stream();
-    let effect_driver = tokio::spawn(async move {
-        use futures_util::stream::FuturesUnordered;
-        use futures_util::StreamExt as _;
-
-        let mut stream_tasks: FuturesUnordered<tokio::task::JoinHandle<()>> =
-            FuturesUnordered::new();
-        let obs = stream_observer;
-
+    // Handle Ctrl+C: send shutdown request on first signal
+    let shutdown_queue = state_queue.clone();
+    tokio::spawn(async move {
+        let mut first = true;
         loop {
-            tokio::select! {
-                handle = effect_stream_rx.recv() => {
-                    let Some(handle): Option<rum::flow::event_loop::EffectStreamHandle> = handle else { break };
-                    let mut stream_obs = obs.clone_for_stream();
-                    let name = handle.name;
-                    let rx = handle.rx;
-                    stream_tasks.push(tokio::spawn(async move {
-                        stream_obs.on_effect_stream(&name, rx).await;
-                    }));
-                }
-                Some(_) = stream_tasks.next() => {
-                    // Stream task completed, continue
-                }
+            tokio::signal::ctrl_c().await.ok();
+            if first {
+                shutdown_queue.send(RumMessage::RequestShutdown);
+                first = false;
+            } else {
+                shutdown_queue.send(RumMessage::RequestForceStop);
             }
         }
-
-        // Drain remaining stream tasks
-        while stream_tasks.next().await.is_some() {}
     });
 
-    // Run event loop in a spawned task, observer in the foreground.
-    let mut ctx = FlowContext::new(sys_config.clone(), cmd_rx, transition_tx, effect_stream_tx);
-    let event_loop_handle = tokio::spawn(async move {
-        run_event_loop(flow, initial_state, &mut ctx).await
-    });
-
-    if detach {
-        // Detach mode: observe transitions until VM reaches Running state,
-        // then exit. No Ctrl+C handling needed.
-        loop {
-            match transition_rx.recv().await {
-                Ok(t) => {
-                    obs.on_transition(&t).await;
-                    if matches!(t.new_state, rum::vm_state::VmState::Running) {
-                        break;
-                    }
-                    if t.new_state.is_terminal() {
-                        break;
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!("observer lagged, missed {n} transitions");
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-
-        // Drop command sender so event loop exits its interactive wait
-        drop(cmd_tx);
-    } else {
-        // Attached mode: observe + handle Ctrl+C for graceful shutdown.
-        let obs_result = observer::run_attached_client(
-            &mut transition_rx,
-            &cmd_tx,
-            &mut *obs,
-        ).await;
-
-        // Drop the command sender so the event loop can exit
-        drop(cmd_tx);
-        obs_result?;
-    }
-
-    // Wait for the event loop to finish
-    let final_state = event_loop_handle.await
-        .map_err(|e| rum::error::RumError::Daemon {
-            message: format!("event loop panicked: {e}"),
-        })??;
-
-    // Wait for effect streams to drain
-    let _ = effect_driver.await;
-
-    // Handle detach mode: spawn background daemon
-    if detach {
-        if !rum::daemon::is_daemon_running(sys_config) {
-            rum::daemon::spawn_background(sys_config)?;
-            rum::daemon::wait_for_daemon_ready(sys_config).await?;
-        }
-        eprintln!("VM is running (detached). Use `rum down` to stop.");
-    }
+    // Run the ECS select loop until AppExit is set
+    ecsdk_app::run_async(app, rx).await;
 
     // Write provisioned marker if we completed a first boot successfully
-    let marker = rum::paths::provisioned_marker(&sys_config.id, sys_config.name.as_deref());
-    if matches!(final_state, rum::vm_state::VmState::Running | rum::vm_state::VmState::Provisioned)
-        && !marker.exists()
-    {
-        let _ = tokio::fs::write(&marker, b"").await;
+    if matches!(intent, FlowIntent::FirstBoot | FlowIntent::Reboot) {
+        let marker = rum::paths::provisioned_marker(&sys_config.id, sys_config.name.as_deref());
+        if !marker.exists() {
+            let _ = tokio::fs::write(&marker, b"").await;
+        }
     }
 
     Ok(())
