@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use bevy::app::prelude::*;
 use bevy::ecs::prelude::*;
+use bevy_replicon::prelude::Replicated;
 use ecsdk_core::ApplyMessage;
 use ecsdk_tasks::{SpawnTask, TaskQueue};
 use seldom_state::prelude::*;
@@ -55,7 +56,7 @@ impl ScriptQueue {
     }
 }
 
-#[derive(Component)]
+#[derive(Component, serde::Serialize, serde::Deserialize)]
 pub struct VmError(pub String);
 
 // ── Messages ────────────────────────────────────────────────────
@@ -112,6 +113,7 @@ impl ApplyMessage for RumMessage {
                         current: 0,
                         total: *total_steps,
                     },
+                    Replicated,
                 ));
 
                 // Insert the initial phase marker component to kick off the SM

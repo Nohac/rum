@@ -24,6 +24,8 @@ pub struct SharedReplicationPlugin;
 impl Plugin for SharedReplicationPlugin {
     fn build(&self, app: &mut App) {
         app.replicate::<VmPhase>();
+        app.replicate::<crate::render::StepProgress>();
+        app.replicate::<crate::lifecycle::VmError>();
         app.add_server_event::<ServerExitNotice>(Channel::Ordered);
         app.add_client_event::<ShutdownRequest>(Channel::Ordered);
     }

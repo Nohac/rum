@@ -9,7 +9,7 @@ use crate::cli::OutputFormat;
 
 // ── Components ──────────────────────────────────────────────────
 
-#[derive(Component)]
+#[derive(Component, serde::Serialize, serde::Deserialize)]
 pub struct StepProgress {
     pub current: usize,
     pub total: usize,

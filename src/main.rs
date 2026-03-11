@@ -1,7 +1,10 @@
 use std::io::IsTerminal;
+use std::time::Duration;
 
+use bevy::ecs::prelude::*;
+use bevy_replicon::shared::message::client_event::ClientTriggerExt;
 use clap::Parser;
-use ecsdk_core::MessageQueue;
+use ecsdk_core::{CmdQueue, MessageQueue};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
@@ -13,6 +16,7 @@ use rum::config;
 use rum::lifecycle::{LifecyclePlugin, RumMessage, SpawnVmData};
 use rum::phase::{FlowIntent, VmPhase};
 use rum::render::RumRenderPlugin;
+use rum::replicon::{RumClientPlugin, RumServerPlugin, ShutdownRequest};
 use rum::logging;
 use rum::progress::OutputMode;
 use rum::vm_state::VmState;
@@ -55,10 +59,10 @@ async fn main() -> miette::Result<()> {
         return rum::init::run(defaults).map_err(Into::into);
     }
 
-    // Handle serve before normal config loading — daemon mode
+    // Handle serve before normal config loading — daemon mode (ECS app)
     if matches!(cli.command, Command::Serve) {
         let sys_config = config::load_config(&cli.config)?;
-        rum::daemon::run_serve(&sys_config).await?;
+        run_daemon(&sys_config).await?;
         return Ok(());
     }
 
@@ -353,17 +357,90 @@ fn select_intent(
     }
 }
 
-/// Run `rum up` through the ECS app.
+/// Run `rum up` — spawn daemon if needed, then connect as replicon client.
 async fn run_up(
     sys_config: &rum::config::SystemConfig,
     reset: bool,
-    _detach: bool,
+    detach: bool,
     output_format: &OutputFormat,
 ) -> Result<(), rum::error::RumError> {
     // --reset: wipe artifacts first
     if reset {
         rum::workers::destroy_vm(sys_config).await.ok();
     }
+
+    let socket_path = rum::paths::socket_path(&sys_config.id, sys_config.name.as_deref());
+
+    // Spawn daemon if not already running
+    if !daemon_is_running(&socket_path).await {
+        rum::daemon::spawn_background(sys_config)?;
+        if !wait_for_daemon(&socket_path).await {
+            return Err(rum::error::RumError::Daemon {
+                message: "daemon did not become ready within 10s".into(),
+            });
+        }
+    }
+
+    // --detach: daemon is running, we're done
+    if detach {
+        eprintln!("Daemon started for '{}'.", sys_config.display_name());
+        return Ok(());
+    }
+
+    // Run client ECS app with replicon + render
+    let (mut app, rx) = ecsdk_app::setup::<RumMessage>();
+    app.add_plugins(RumClientPlugin {
+        socket_path: socket_path.clone(),
+    });
+    app.add_plugins(RumRenderPlugin(output_format.clone()));
+
+    // Ctrl+C: send ShutdownRequest client event to daemon
+    let cmd_queue = app.world().resource::<CmdQueue>().clone();
+    tokio::spawn(async move {
+        let mut first = true;
+        loop {
+            tokio::signal::ctrl_c().await.ok();
+            if first {
+                cmd_queue
+                    .send(|world: &mut World| {
+                        world.commands().client_trigger(ShutdownRequest);
+                    })
+                    .wake();
+                first = false;
+            } else {
+                cmd_queue
+                    .send(|world: &mut World| {
+                        world.resource_mut::<ecsdk_core::AppExit>().0 = true;
+                    })
+                    .wake();
+            }
+        }
+    });
+
+    ecsdk_app::run_async(app, rx).await;
+    Ok(())
+}
+
+/// Run daemon mode: ECS app with lifecycle + replicon server.
+async fn run_daemon(
+    sys_config: &rum::config::SystemConfig,
+) -> Result<(), rum::error::RumError> {
+    let id = &sys_config.id;
+    let name_opt = sys_config.name.as_deref();
+
+    // Write PID file
+    let pid_file = rum::paths::pid_path(id, name_opt);
+    if let Some(parent) = pid_file.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::write(&pid_file, std::process::id().to_string()).map_err(|e| {
+        rum::error::RumError::Io {
+            context: format!("writing PID file {}", pid_file.display()),
+            source: e,
+        }
+    })?;
+
+    let socket_path = rum::paths::socket_path(id, name_opt);
 
     // Detect current VM state
     let initial_state = {
@@ -383,10 +460,12 @@ async fn run_up(
     let (intent, initial_phase, scripts, total_steps) =
         select_intent(&initial_state, system_scripts, boot_scripts)?;
 
-    // Set up ECS app
+    // Set up ECS app with lifecycle + server (no render)
     let (mut app, rx) = ecsdk_app::setup::<RumMessage>();
     app.add_plugins(LifecyclePlugin);
-    app.add_plugins(RumRenderPlugin(output_format.clone()));
+    app.add_plugins(RumServerPlugin {
+        socket_path: socket_path.clone(),
+    });
 
     // Send the SpawnVm message to kick off the state machine
     let state_queue = app.world().resource::<MessageQueue<RumMessage>>().clone();
@@ -398,7 +477,7 @@ async fn run_up(
         total_steps,
     })));
 
-    // Handle Ctrl+C: send shutdown request on first signal
+    // Handle Ctrl+C / SIGTERM: send shutdown request
     let shutdown_queue = state_queue.clone();
     tokio::spawn(async move {
         let mut first = true;
@@ -418,13 +497,33 @@ async fn run_up(
 
     // Write provisioned marker if we completed a first boot successfully
     if matches!(intent, FlowIntent::FirstBoot | FlowIntent::Reboot) {
-        let marker = rum::paths::provisioned_marker(&sys_config.id, sys_config.name.as_deref());
+        let marker = rum::paths::provisioned_marker(id, name_opt);
         if !marker.exists() {
             let _ = tokio::fs::write(&marker, b"").await;
         }
     }
 
+    // Cleanup
+    let _ = std::fs::remove_file(&socket_path);
+    let _ = std::fs::remove_file(&pid_file);
+
     Ok(())
+}
+
+/// Check if a daemon is already listening on the socket.
+async fn daemon_is_running(socket_path: &std::path::Path) -> bool {
+    tokio::net::UnixStream::connect(socket_path).await.is_ok()
+}
+
+/// Wait for the daemon to become ready (socket connectable).
+async fn wait_for_daemon(socket_path: &std::path::Path) -> bool {
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        if daemon_is_running(socket_path).await {
+            return true;
+        }
+    }
+    false
 }
 
 /// Local cleanup after force-stopping a VM via roam: undefine domain,
