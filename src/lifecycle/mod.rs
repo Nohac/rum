@@ -100,7 +100,6 @@ impl ApplyMessage for RumMessage {
                     total_steps,
                 } = data.as_ref();
 
-                let initial_marker = phase_marker(*initial_phase);
                 let sm = build_sm_for_intent(*intent);
 
                 let mut entity = world.spawn((
@@ -115,9 +114,7 @@ impl ApplyMessage for RumMessage {
                     },
                     Replicated,
                 ));
-
-                // Insert the initial phase marker component to kick off the SM
-                initial_marker(&mut entity);
+                initial_phase.insert_marker_world(&mut entity);
             }
 
             Self::MarkDone { entity, success } => {
@@ -140,51 +137,6 @@ impl ApplyMessage for RumMessage {
                 world.resource_mut::<ecsdk_core::AppExit>().0 = true;
             }
         }
-    }
-}
-
-/// Returns a closure that inserts the appropriate marker component for a VmPhase.
-fn phase_marker(phase: VmPhase) -> fn(&mut EntityWorldMut) {
-    match phase {
-        VmPhase::Virgin => |e| {
-            e.insert(Virgin);
-        },
-        VmPhase::DownloadingImage => |e| {
-            e.insert(DownloadingImage);
-        },
-        VmPhase::Preparing => |e| {
-            e.insert(Preparing);
-        },
-        VmPhase::Booting => |e| {
-            e.insert(Booting);
-        },
-        VmPhase::ConnectingAgent => |e| {
-            e.insert(ConnectingAgent);
-        },
-        VmPhase::Provisioning => |e| {
-            e.insert(Provisioning);
-        },
-        VmPhase::StartingServices => |e| {
-            e.insert(StartingServices);
-        },
-        VmPhase::Running => |e| {
-            e.insert(Running);
-        },
-        VmPhase::ShuttingDown => |e| {
-            e.insert(ShuttingDown);
-        },
-        VmPhase::Destroying => |e| {
-            e.insert(Destroying);
-        },
-        VmPhase::Stopped => |e| {
-            e.insert(Stopped);
-        },
-        VmPhase::Destroyed => |e| {
-            e.insert(Destroyed);
-        },
-        VmPhase::Failed => |e| {
-            e.insert(Failed);
-        },
     }
 }
 

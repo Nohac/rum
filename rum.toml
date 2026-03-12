@@ -1,56 +1,48 @@
+# Ubuntu 22.04 LTS (Jammy)
 [image]
 base = "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
 
 [resources]
-cpus = 4
-memory_mb = 2048
+cpus = 6
+memory_mb = 6144
+
+[ssh]
+user = "rum"
 
 [network]
-nat = true                  # default: true — adds NAT NIC via "default" network
-hostname = "myhost"         # default: VM name
+hostname = "buduntu"
 
-[[network.interfaces]]
-network = "rum-hostonly"    # libvirt network name
-ip = "192.168.50.10"       # optional: DHCP reservation via stable MAC
+[[ports]]
+host = 8080
+guest = 8080
 
-[[network.interfaces]]
-network = "dev-net"         # no ip = plain DHCP
+[[ports]]
+host = 5201
+guest = 5201
 
-[provision.system]
-script = """
-echo ===============================
-echo initial system setup
-echo ===============================
-"""
+# [[network.interfaces]]
+# network = "netbuntu"
+# ip = "192.168.50.10"
 
-[provision.boot]
-script = """
-echo ===============================
-echo run on each boot
-echo ===============================
-echo "did-run-on-boot" > /did-run.log
-"""
+# [[mounts]]
+# source = "."
+# target = "/mnt/project"
+# tag = "project"
+# inotify = true
 
-[[mounts]]
-source = "."              # "." = rum.toml dir, "git" = repo root, or absolute path
-target = "/mnt/project"
-readonly = false           # default: false
-tag = "project"            # default: auto-generated from target
-
-[drives.data]
+[drives.deadpool]
 size = "10G"
 
-[drives.logs1]
-size = "50G"
-
-[drives.logs2]
-size = "50G"
-
-[[fs.ext4]]
-drive = "data"
-target = "/mnt/data"
+[drives.pooleo]
+size = "10G"
 
 [[fs.zfs]]
-drives = ["logs1", "logs2"]
-target = "/mnt/logs"
-pool = "logspool"              # optional: defaults to first drive name
+drives = ["deadpool", "pooleo"]
+target = "/mnt/deadpool"
+pool = "deadpool"
+
+[provision.system]
+script = "apt-get update && apt-get install -y inotify-tools"
+
+[provision.boot]
+script = "echo booted"
