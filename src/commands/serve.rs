@@ -76,6 +76,8 @@ pub async fn run_daemon(sys_config: &SystemConfig) -> Result<(), RumError> {
     app.add_plugins(RumServerPlugin {
         socket_path: socket_path.clone(),
     });
+    app.insert_resource(crate::replicon::DaemonConfig(sys_config.clone()));
+    let service_handles = crate::daemon::start_services(sys_config).await?;
 
     // Send the SpawnVm message to kick off the state machine
     let state_queue = app.world().resource::<MessageQueue<RumMessage>>().clone();
@@ -114,6 +116,7 @@ pub async fn run_daemon(sys_config: &SystemConfig) -> Result<(), RumError> {
     }
 
     // Cleanup
+    crate::daemon::abort_handles(&service_handles);
     let _ = std::fs::remove_file(&socket_path);
     let _ = std::fs::remove_file(&pid_file);
 

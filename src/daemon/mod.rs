@@ -1,9 +1,6 @@
-mod rpc;
-mod client;
 mod service;
 mod serve;
 
-pub use rpc::{StatusInfo, RumDaemon, RumDaemonClient};
-pub use client::{DaemonConnector, DaemonClient, connect, is_daemon_running};
-pub use serve::{run_serve, spawn_background, wait_for_daemon_ready};
-pub(crate) use serve::ServiceHandles;
+pub use service::{StatusInfo, current_status, ssh_config};
+pub use serve::{is_daemon_running, spawn_background};
+pub(crate) use serve::{ServiceHandles, abort_handles, start_services};
