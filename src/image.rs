@@ -52,10 +52,7 @@ pub fn is_cached(base: &str, cache_dir: &Path) -> bool {
 
 /// Ensure the base image is available locally, downloading if needed.
 /// Returns the path to the cached image file.
-pub async fn ensure_base_image(
-    base: &str,
-    cache_dir: &Path,
-) -> Result<PathBuf, RumError> {
+pub async fn ensure_base_image(base: &str, cache_dir: &Path) -> Result<PathBuf, RumError> {
     if !base.starts_with("http://") && !base.starts_with("https://") {
         let path = PathBuf::from(base);
         if !path.exists() {
@@ -176,7 +173,11 @@ pub fn list_cached(cache_dir: &Path) -> Result<(), RumError> {
             modified
         );
     }
-    println!("\n{} image(s), {} total", entries.len(), format_size(total_size));
+    println!(
+        "\n{} image(s), {} total",
+        entries.len(),
+        format_size(total_size)
+    );
 
     Ok(())
 }

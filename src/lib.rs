@@ -4,6 +4,7 @@ pub mod agent;
 pub mod backend;
 pub mod cli;
 pub mod cloudinit;
+pub mod commands;
 pub mod config;
 pub mod daemon;
 pub mod domain_xml;
