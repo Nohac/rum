@@ -17,6 +17,13 @@ use rum::progress::OutputMode;
 async fn main() -> miette::Result<()> {
     let cli = Cli::parse();
 
+    // Handle serve before tracing init — daemon sets up its own subscriber
+    if matches!(cli.command, Command::Serve) {
+        let sys_config = config::load_config(&cli.config)?;
+        commands::serve::run_daemon(&sys_config).await?;
+        return Ok(());
+    }
+
     let output_format = resolve_output_format(&cli.output);
     let mode = resolve_output_mode(&output_format, cli.verbose, cli.quiet);
 
@@ -49,13 +56,6 @@ async fn main() -> miette::Result<()> {
     // Handle init before loading config — it creates the config
     if let Command::Init { defaults } = cli.command {
         return rum::init::run(defaults).map_err(Into::into);
-    }
-
-    // Handle serve before normal config loading — daemon mode (ECS app)
-    if matches!(cli.command, Command::Serve) {
-        let sys_config = config::load_config(&cli.config)?;
-        commands::serve::run_daemon(&sys_config).await?;
-        return Ok(());
     }
 
     // Handle skill before loading config — it doesn't need rum.toml

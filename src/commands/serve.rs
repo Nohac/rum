@@ -1,4 +1,7 @@
-use ecsdk_core::MessageQueue;
+use ecsdk_core::{MessageQueue, WakeSignal};
+use tracing_subscriber::Layer;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::config::SystemConfig;
 use crate::error::RumError;
@@ -44,6 +47,31 @@ pub async fn run_daemon(sys_config: &SystemConfig) -> Result<(), RumError> {
 
     // Set up ECS app with lifecycle + server (no render)
     let (mut app, rx) = ecsdk_app::setup::<RumMessage>();
+
+    // Set up tracing: ecsdk layer (routes tracing events into ECS) + file layer
+    let wake = app.world().resource::<WakeSignal>().clone();
+    let (tracing_layer, tracing_receiver) = ecsdk_tracing::setup(wake);
+
+    let logs_dir = crate::paths::logs_dir(id, name_opt);
+    std::fs::create_dir_all(&logs_dir).ok();
+    let (file_writer, file_handle) = crate::logging::DeferredFileWriter::new();
+    file_handle.set_file(&logs_dir.join("rum.log")).ok();
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(file_writer)
+        .with_filter(tracing_subscriber::EnvFilter::new("rum=debug"));
+
+    tracing_subscriber::registry()
+        .with(
+            tracing_layer.with_filter(
+                tracing_subscriber::filter::Targets::new()
+                    .with_target("rum", tracing::Level::DEBUG),
+            ),
+        )
+        .with(file_layer)
+        .init();
+
+    app.add_plugins(ecsdk_tracing::TracingPlugin::new(tracing_receiver));
     app.add_plugins(LifecyclePlugin);
     app.add_plugins(RumServerPlugin {
         socket_path: socket_path.clone(),

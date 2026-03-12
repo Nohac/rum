@@ -1,9 +1,9 @@
-pub mod first_boot;
-pub mod reboot;
-pub mod reattach;
-pub mod shutdown;
 pub mod destroy;
+pub mod first_boot;
+pub mod reattach;
+pub mod reboot;
 pub mod reprovision;
+pub mod shutdown;
 
 use std::path::PathBuf;
 
@@ -43,7 +43,10 @@ pub struct ScriptQueue {
 
 impl ScriptQueue {
     pub fn new(scripts: Vec<String>) -> Self {
-        Self { scripts, current: 0 }
+        Self {
+            scripts,
+            current: 0,
+        }
     }
 
     pub fn current_name(&self) -> Option<&str> {
@@ -67,10 +70,7 @@ pub enum RumMessage {
     SpawnVm(Box<SpawnVmData>),
 
     /// Mark a phase as done (success or failure).
-    MarkDone {
-        entity: Entity,
-        success: bool,
-    },
+    MarkDone { entity: Entity, success: bool },
 
     /// Request graceful shutdown (Ctrl+C).
     RequestShutdown,
@@ -146,19 +146,45 @@ impl ApplyMessage for RumMessage {
 /// Returns a closure that inserts the appropriate marker component for a VmPhase.
 fn phase_marker(phase: VmPhase) -> fn(&mut EntityWorldMut) {
     match phase {
-        VmPhase::Virgin => |e| { e.insert(Virgin); },
-        VmPhase::DownloadingImage => |e| { e.insert(DownloadingImage); },
-        VmPhase::Preparing => |e| { e.insert(Preparing); },
-        VmPhase::Booting => |e| { e.insert(Booting); },
-        VmPhase::ConnectingAgent => |e| { e.insert(ConnectingAgent); },
-        VmPhase::Provisioning => |e| { e.insert(Provisioning); },
-        VmPhase::StartingServices => |e| { e.insert(StartingServices); },
-        VmPhase::Running => |e| { e.insert(Running); },
-        VmPhase::ShuttingDown => |e| { e.insert(ShuttingDown); },
-        VmPhase::Destroying => |e| { e.insert(Destroying); },
-        VmPhase::Stopped => |e| { e.insert(Stopped); },
-        VmPhase::Destroyed => |e| { e.insert(Destroyed); },
-        VmPhase::Failed => |e| { e.insert(Failed); },
+        VmPhase::Virgin => |e| {
+            e.insert(Virgin);
+        },
+        VmPhase::DownloadingImage => |e| {
+            e.insert(DownloadingImage);
+        },
+        VmPhase::Preparing => |e| {
+            e.insert(Preparing);
+        },
+        VmPhase::Booting => |e| {
+            e.insert(Booting);
+        },
+        VmPhase::ConnectingAgent => |e| {
+            e.insert(ConnectingAgent);
+        },
+        VmPhase::Provisioning => |e| {
+            e.insert(Provisioning);
+        },
+        VmPhase::StartingServices => |e| {
+            e.insert(StartingServices);
+        },
+        VmPhase::Running => |e| {
+            e.insert(Running);
+        },
+        VmPhase::ShuttingDown => |e| {
+            e.insert(ShuttingDown);
+        },
+        VmPhase::Destroying => |e| {
+            e.insert(Destroying);
+        },
+        VmPhase::Stopped => |e| {
+            e.insert(Stopped);
+        },
+        VmPhase::Destroyed => |e| {
+            e.insert(Destroyed);
+        },
+        VmPhase::Failed => |e| {
+            e.insert(Failed);
+        },
     }
 }
 
@@ -193,31 +219,35 @@ fn on_downloading_image(
     configs: Query<&VmConfig>,
 ) {
     let entity = trigger.event_target();
-    let Ok(config) = configs.get(entity) else { return };
+    let Ok(config) = configs.get(entity) else {
+        return;
+    };
     let base = config.0.config.image.base.clone();
 
-    commands.entity(entity).spawn_task(move |cmd: Tq| async move {
-        let entity = cmd.entity();
-        let cache = crate::paths::cache_dir();
-        match crate::workers::ensure_image(&base, &cache).await {
-            Ok(path) => {
-                cmd.send(move |world: &mut World| {
-                    world.entity_mut(entity).insert(BaseImagePath(path));
-                    world.entity_mut(entity).insert(Done::Success);
-                })
-                .wake();
+    commands
+        .entity(entity)
+        .spawn_task(move |cmd: Tq| async move {
+            let entity = cmd.entity();
+            let cache = crate::paths::cache_dir();
+            match crate::workers::ensure_image(&base, &cache).await {
+                Ok(path) => {
+                    cmd.send(move |world: &mut World| {
+                        world.entity_mut(entity).insert(BaseImagePath(path));
+                        world.entity_mut(entity).insert(Done::Success);
+                    })
+                    .wake();
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    cmd.send(move |world: &mut World| {
+                        world
+                            .entity_mut(entity)
+                            .insert((VmError(msg), Done::Failure));
+                    })
+                    .wake();
+                }
             }
-            Err(e) => {
-                let msg = e.to_string();
-                cmd.send(move |world: &mut World| {
-                    world
-                        .entity_mut(entity)
-                        .insert((VmError(msg), Done::Failure));
-                })
-                .wake();
-            }
-        }
-    });
+        });
 }
 
 fn on_preparing(
@@ -227,7 +257,9 @@ fn on_preparing(
     images: Query<&BaseImagePath>,
 ) {
     let entity = trigger.event_target();
-    let Ok(config) = configs.get(entity) else { return };
+    let Ok(config) = configs.get(entity) else {
+        return;
+    };
     let Ok(base_image) = images.get(entity) else {
         commands
             .entity(entity)
@@ -237,58 +269,60 @@ fn on_preparing(
     let sc = config.0.clone();
     let base_path = base_image.0.clone();
 
-    commands.entity(entity).spawn_task(move |cmd: Tq| async move {
-        let entity = cmd.entity();
-        match crate::workers::prepare_vm(&sc, &base_path).await {
-            Ok(()) => {
-                cmd.send(move |world: &mut World| {
-                    world.entity_mut(entity).insert(Done::Success);
-                })
-                .wake();
+    commands
+        .entity(entity)
+        .spawn_task(move |cmd: Tq| async move {
+            let entity = cmd.entity();
+            match crate::workers::prepare_vm(&sc, &base_path).await {
+                Ok(()) => {
+                    cmd.send(move |world: &mut World| {
+                        world.entity_mut(entity).insert(Done::Success);
+                    })
+                    .wake();
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    cmd.send(move |world: &mut World| {
+                        world
+                            .entity_mut(entity)
+                            .insert((VmError(msg), Done::Failure));
+                    })
+                    .wake();
+                }
             }
-            Err(e) => {
-                let msg = e.to_string();
-                cmd.send(move |world: &mut World| {
-                    world
-                        .entity_mut(entity)
-                        .insert((VmError(msg), Done::Failure));
-                })
-                .wake();
-            }
-        }
-    });
+        });
 }
 
-fn on_booting(
-    trigger: On<Insert, Booting>,
-    mut commands: Commands,
-    configs: Query<&VmConfig>,
-) {
+fn on_booting(trigger: On<Insert, Booting>, mut commands: Commands, configs: Query<&VmConfig>) {
     let entity = trigger.event_target();
-    let Ok(config) = configs.get(entity) else { return };
+    let Ok(config) = configs.get(entity) else {
+        return;
+    };
     let sc = config.0.clone();
 
-    commands.entity(entity).spawn_task(move |cmd: Tq| async move {
-        let entity = cmd.entity();
-        match crate::workers::boot_vm(&sc).await {
-            Ok(cid) => {
-                cmd.send(move |world: &mut World| {
-                    world.entity_mut(entity).insert(VsockCid(cid));
-                    world.entity_mut(entity).insert(Done::Success);
-                })
-                .wake();
+    commands
+        .entity(entity)
+        .spawn_task(move |cmd: Tq| async move {
+            let entity = cmd.entity();
+            match crate::workers::boot_vm(&sc).await {
+                Ok(cid) => {
+                    cmd.send(move |world: &mut World| {
+                        world.entity_mut(entity).insert(VsockCid(cid));
+                        world.entity_mut(entity).insert(Done::Success);
+                    })
+                    .wake();
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    cmd.send(move |world: &mut World| {
+                        world
+                            .entity_mut(entity)
+                            .insert((VmError(msg), Done::Failure));
+                    })
+                    .wake();
+                }
             }
-            Err(e) => {
-                let msg = e.to_string();
-                cmd.send(move |world: &mut World| {
-                    world
-                        .entity_mut(entity)
-                        .insert((VmError(msg), Done::Failure));
-                })
-                .wake();
-            }
-        }
-    });
+        });
 }
 
 fn on_connecting_agent(
@@ -305,27 +339,29 @@ fn on_connecting_agent(
     };
     let cid = cid.0;
 
-    commands.entity(entity).spawn_task(move |cmd: Tq| async move {
-        let entity = cmd.entity();
-        match crate::workers::connect_agent(cid).await {
-            Ok(client) => {
-                cmd.send(move |world: &mut World| {
-                    world.entity_mut(entity).insert(AgentHandle(client));
-                    world.entity_mut(entity).insert(Done::Success);
-                })
-                .wake();
+    commands
+        .entity(entity)
+        .spawn_task(move |cmd: Tq| async move {
+            let entity = cmd.entity();
+            match crate::workers::connect_agent(cid).await {
+                Ok(client) => {
+                    cmd.send(move |world: &mut World| {
+                        world.entity_mut(entity).insert(AgentHandle(client));
+                        world.entity_mut(entity).insert(Done::Success);
+                    })
+                    .wake();
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    cmd.send(move |world: &mut World| {
+                        world
+                            .entity_mut(entity)
+                            .insert((VmError(msg), Done::Failure));
+                    })
+                    .wake();
+                }
             }
-            Err(e) => {
-                let msg = e.to_string();
-                cmd.send(move |world: &mut World| {
-                    world
-                        .entity_mut(entity)
-                        .insert((VmError(msg), Done::Failure));
-                })
-                .wake();
-            }
-        }
-    });
+        });
 }
 
 fn on_provisioning(
@@ -336,7 +372,9 @@ fn on_provisioning(
     scripts: Query<&ScriptQueue>,
 ) {
     let entity = trigger.event_target();
-    let Ok(config) = configs.get(entity) else { return };
+    let Ok(config) = configs.get(entity) else {
+        return;
+    };
     let Ok(agent) = agents.get(entity) else {
         // No agent — skip provisioning (reattach case)
         commands.entity(entity).insert(Done::Success);
@@ -358,44 +396,46 @@ fn on_provisioning(
     let agent_client = agent.0.clone();
     let all_scripts = script_queue.scripts.clone();
 
-    commands.entity(entity).spawn_task(move |cmd: Tq| async move {
-        let entity = cmd.entity();
+    commands
+        .entity(entity)
+        .spawn_task(move |cmd: Tq| async move {
+            let entity = cmd.entity();
 
-        // Build provision scripts from names
-        let mut provision_scripts = Vec::new();
-        for name in &all_scripts {
-            if let Some(script) = build_provision_script(&sc, name) {
-                provision_scripts.push(script);
+            // Build provision scripts from names
+            let mut provision_scripts = Vec::new();
+            for name in &all_scripts {
+                if let Some(script) = build_provision_script(&sc, name) {
+                    provision_scripts.push(script);
+                }
             }
-        }
 
-        if provision_scripts.is_empty() {
-            cmd.send(move |world: &mut World| {
-                world.entity_mut(entity).insert(Done::Success);
-            })
-            .wake();
-            return;
-        }
-
-        let logs_dir = crate::paths::logs_dir(&sc.id, sc.name.as_deref());
-        match crate::workers::run_provision(&agent_client, provision_scripts, &logs_dir).await {
-            Ok(()) => {
+            if provision_scripts.is_empty() {
                 cmd.send(move |world: &mut World| {
                     world.entity_mut(entity).insert(Done::Success);
                 })
                 .wake();
+                return;
             }
-            Err(e) => {
-                let msg = e.to_string();
-                cmd.send(move |world: &mut World| {
-                    world
-                        .entity_mut(entity)
-                        .insert((VmError(msg), Done::Failure));
-                })
-                .wake();
+
+            let logs_dir = crate::paths::logs_dir(&sc.id, sc.name.as_deref());
+            match crate::workers::run_provision(&agent_client, provision_scripts, &logs_dir).await {
+                Ok(()) => {
+                    cmd.send(move |world: &mut World| {
+                        world.entity_mut(entity).insert(Done::Success);
+                    })
+                    .wake();
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    cmd.send(move |world: &mut World| {
+                        world
+                            .entity_mut(entity)
+                            .insert((VmError(msg), Done::Failure));
+                    })
+                    .wake();
+                }
             }
-        }
-    });
+        });
 }
 
 fn on_starting_services(
@@ -405,37 +445,41 @@ fn on_starting_services(
     cids: Query<&VsockCid>,
 ) {
     let entity = trigger.event_target();
-    let Ok(config) = configs.get(entity) else { return };
+    let Ok(config) = configs.get(entity) else {
+        return;
+    };
     let cid = cids.get(entity).ok().map(|c| c.0);
     let sc = config.0.clone();
 
-    commands.entity(entity).spawn_task(move |cmd: Tq| async move {
-        let entity = cmd.entity();
-        let Some(cid) = cid else {
-            // No vsock CID — skip services (non-fatal)
-            cmd.send(move |world: &mut World| {
-                world.entity_mut(entity).insert(Done::Success);
-            })
-            .wake();
-            return;
-        };
-        match crate::workers::start_services(cid, &sc).await {
-            Ok(_handles) => {
+    commands
+        .entity(entity)
+        .spawn_task(move |cmd: Tq| async move {
+            let entity = cmd.entity();
+            let Some(cid) = cid else {
+                // No vsock CID — skip services (non-fatal)
                 cmd.send(move |world: &mut World| {
                     world.entity_mut(entity).insert(Done::Success);
                 })
                 .wake();
+                return;
+            };
+            match crate::workers::start_services(cid, &sc).await {
+                Ok(_handles) => {
+                    cmd.send(move |world: &mut World| {
+                        world.entity_mut(entity).insert(Done::Success);
+                    })
+                    .wake();
+                }
+                Err(e) => {
+                    tracing::warn!("failed to start services: {e}");
+                    // Non-fatal — still mark success
+                    cmd.send(move |world: &mut World| {
+                        world.entity_mut(entity).insert(Done::Success);
+                    })
+                    .wake();
+                }
             }
-            Err(e) => {
-                tracing::warn!("failed to start services: {e}");
-                // Non-fatal — still mark success
-                cmd.send(move |world: &mut World| {
-                    world.entity_mut(entity).insert(Done::Success);
-                })
-                .wake();
-            }
-        }
-    });
+        });
 }
 
 fn on_shutting_down(
@@ -444,28 +488,23 @@ fn on_shutting_down(
     configs: Query<&VmConfig>,
 ) {
     let entity = trigger.event_target();
-    let Ok(config) = configs.get(entity) else { return };
+    let Ok(config) = configs.get(entity) else {
+        return;
+    };
     let sc = config.0.clone();
 
-    commands.entity(entity).spawn_task(move |cmd: Tq| async move {
-        let entity = cmd.entity();
-        match crate::workers::shutdown_vm(&sc).await {
-            Ok(()) => {
-                cmd.send(move |world: &mut World| {
-                    world.entity_mut(entity).insert(Done::Success);
-                })
-                .wake();
-            }
-            Err(e) => {
+    commands
+        .entity(entity)
+        .spawn_task(move |cmd: Tq| async move {
+            let entity = cmd.entity();
+            if let Err(e) = crate::workers::shutdown_vm(&sc).await {
                 tracing::warn!("shutdown failed: {e}");
-                // Still mark success — shutdown is best-effort
-                cmd.send(move |world: &mut World| {
-                    world.entity_mut(entity).insert(Done::Success);
-                })
-                .wake();
             }
-        }
-    });
+            cmd.send(move |world: &mut World| {
+                world.entity_mut(entity).insert(Done::Success);
+            })
+            .wake();
+        });
 }
 
 fn on_destroying(
@@ -474,36 +513,38 @@ fn on_destroying(
     configs: Query<&VmConfig>,
 ) {
     let entity = trigger.event_target();
-    let Ok(config) = configs.get(entity) else { return };
+    let Ok(config) = configs.get(entity) else {
+        return;
+    };
     let sc = config.0.clone();
 
-    commands.entity(entity).spawn_task(move |cmd: Tq| async move {
-        let entity = cmd.entity();
-        match crate::workers::destroy_vm(&sc).await {
-            Ok(()) => {
-                cmd.send(move |world: &mut World| {
-                    world.entity_mut(entity).insert(Done::Success);
-                })
-                .wake();
+    commands
+        .entity(entity)
+        .spawn_task(move |cmd: Tq| async move {
+            let entity = cmd.entity();
+            match crate::workers::destroy_vm(&sc).await {
+                Ok(()) => {
+                    cmd.send(move |world: &mut World| {
+                        world.entity_mut(entity).insert(Done::Success);
+                    })
+                    .wake();
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    cmd.send(move |world: &mut World| {
+                        world
+                            .entity_mut(entity)
+                            .insert((VmError(msg), Done::Failure));
+                    })
+                    .wake();
+                }
             }
-            Err(e) => {
-                let msg = e.to_string();
-                cmd.send(move |world: &mut World| {
-                    world
-                        .entity_mut(entity)
-                        .insert((VmError(msg), Done::Failure));
-                })
-                .wake();
-            }
-        }
-    });
+        });
 }
 
 // ── Step progress tracking ──────────────────────────────────────
 
-fn advance_step_progress(
-    mut query: Query<&mut crate::render::StepProgress, Changed<VmPhase>>,
-) {
+fn advance_step_progress(mut query: Query<&mut crate::render::StepProgress, Changed<VmPhase>>) {
     for mut progress in &mut query {
         progress.current += 1;
     }
@@ -511,17 +552,11 @@ fn advance_step_progress(
 
 // ── Terminal state observers ────────────────────────────────────
 
-fn on_stopped(
-    _trigger: On<Insert, Stopped>,
-    mut exit: ResMut<ecsdk_core::AppExit>,
-) {
+fn on_stopped(_trigger: On<Insert, Stopped>, mut exit: ResMut<ecsdk_core::AppExit>) {
     exit.0 = true;
 }
 
-fn on_destroyed(
-    _trigger: On<Insert, Destroyed>,
-    mut exit: ResMut<ecsdk_core::AppExit>,
-) {
+fn on_destroyed(_trigger: On<Insert, Destroyed>, mut exit: ResMut<ecsdk_core::AppExit>) {
     exit.0 = true;
 }
 
@@ -628,8 +663,8 @@ impl Plugin for LifecyclePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::app::App;
     use crate::phase::VmPhase;
+    use bevy::app::App;
     use ecsdk_core::CmdQueue;
 
     fn test_app() -> App {
@@ -641,9 +676,7 @@ mod tests {
     }
 
     fn spawn_vm(app: &mut App, sm: StateMachine, initial: impl Component + Clone) -> Entity {
-        app.world_mut()
-            .spawn((initial, sm))
-            .id()
+        app.world_mut().spawn((initial, sm)).id()
     }
 
     #[test]
@@ -691,10 +724,7 @@ mod tests {
         app.world_mut().entity_mut(entity).insert(Done::Success);
         app.update(); // StartingServices → Running
         assert!(app.world().get::<Running>(entity).is_some());
-        assert_eq!(
-            app.world().get::<VmPhase>(entity),
-            Some(&VmPhase::Running),
-        );
+        assert_eq!(app.world().get::<VmPhase>(entity), Some(&VmPhase::Running),);
     }
 
     #[test]
@@ -708,10 +738,7 @@ mod tests {
         app.update(); // DownloadingImage → Failed
 
         assert!(app.world().get::<Failed>(entity).is_some());
-        assert_eq!(
-            app.world().get::<VmPhase>(entity),
-            Some(&VmPhase::Failed),
-        );
+        assert_eq!(app.world().get::<VmPhase>(entity), Some(&VmPhase::Failed),);
     }
 
     #[test]
@@ -746,10 +773,7 @@ mod tests {
         app.update(); // ShuttingDown → Stopped
 
         assert!(app.world().get::<Stopped>(entity).is_some());
-        assert_eq!(
-            app.world().get::<VmPhase>(entity),
-            Some(&VmPhase::Stopped),
-        );
+        assert_eq!(app.world().get::<VmPhase>(entity), Some(&VmPhase::Stopped),);
     }
 
     #[test]
