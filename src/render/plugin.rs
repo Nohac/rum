@@ -8,7 +8,7 @@ impl Plugin for RumRenderPlugin {
     fn build(&self, app: &mut App) {
         match self.0 {
             OutputFormat::Interactive | OutputFormat::Auto => {
-                app.add_systems(PostUpdate, super::interactive::render);
+                super::interactive::build(app);
             }
             OutputFormat::Plain => {
                 app.add_systems(PostUpdate, super::plain::render);

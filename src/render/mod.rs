@@ -1,3 +1,4 @@
+mod format;
 mod interactive;
 mod json;
 mod plain;
