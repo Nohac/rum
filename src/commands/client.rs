@@ -20,7 +20,7 @@ pub async fn run_up(
 ) -> Result<(), RumError> {
     // --reset: wipe artifacts first
     if reset {
-        crate::workers::destroy_vm(sys_config).await.ok();
+        crate::vm::destroy::destroy_vm(sys_config).await.ok();
     }
 
     let socket_path = crate::paths::socket_path(&sys_config.id, sys_config.name.as_deref());

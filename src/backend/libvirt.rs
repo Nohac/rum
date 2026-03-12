@@ -1,25 +1,9 @@
-use virt::connect::Connect;
 use virt::domain::Domain;
-use virt::error as virt_error;
 
 use crate::config::SystemConfig;
 use crate::error::RumError;
 use crate::{domain_xml, paths};
-
-pub(crate) struct ConnGuard(Connect);
-
-impl std::ops::Deref for ConnGuard {
-    type Target = Connect;
-    fn deref(&self) -> &Connect {
-        &self.0
-    }
-}
-
-impl Drop for ConnGuard {
-    fn drop(&mut self) {
-        self.0.close().ok();
-    }
-}
+use crate::vm::libvirt::{connect, is_running};
 
 pub struct LibvirtBackend;
 
@@ -97,20 +81,20 @@ impl super::Backend for LibvirtBackend {
 /// then parses the auto-assigned CID from the live domain XML.
 pub fn get_vsock_cid(sys_config: &SystemConfig) -> Result<u32, RumError> {
     let vm_name = sys_config.display_name();
-    let conn = connect(sys_config)?;
+    let conn = crate::vm::libvirt::connect(sys_config)?;
 
     let dom = Domain::lookup_by_name(&conn, vm_name).map_err(|_| RumError::DomainNotFound {
         name: vm_name.to_string(),
     })?;
 
-    if !is_running(&dom) {
+    if !crate::vm::libvirt::is_running(&dom) {
         return Err(RumError::ExecNotReady {
             name: vm_name.to_string(),
             reason: "VM is not running".into(),
         });
     }
 
-    parse_vsock_cid(&dom).ok_or_else(|| RumError::ExecNotReady {
+    crate::vm::libvirt::parse_vsock_cid(&dom).ok_or_else(|| RumError::ExecNotReady {
         name: vm_name.to_string(),
         reason: "could not determine vsock CID from domain XML".into(),
     })
@@ -177,54 +161,4 @@ fn get_vm_ip(dom: &Domain, sys_config: &SystemConfig) -> Result<String, RumError
         name: vm_name.to_string(),
         reason: "no IP address found (VM may still be booting)".into(),
     })
-}
-
-pub(crate) fn connect(sys_config: &SystemConfig) -> Result<ConnGuard, RumError> {
-    // Suppress libvirt's default error handler that prints to stderr.
-    virt_error::clear_error_callback();
-
-    Connect::open(Some(sys_config.libvirt_uri()))
-        .map(ConnGuard)
-        .map_err(|e| RumError::Libvirt {
-            message: format!("failed to connect to libvirt: {e}"),
-            hint: format!(
-                "ensure libvirtd is running and you have access to {}",
-                sys_config.libvirt_uri()
-            ),
-        })
-}
-
-pub(crate) fn is_running(dom: &Domain) -> bool {
-    dom.is_active().unwrap_or(false)
-}
-
-pub(crate) async fn shutdown_domain(dom: &Domain) -> Result<(), RumError> {
-    if !is_running(dom) {
-        return Ok(());
-    }
-    dom.shutdown().map_err(|e| RumError::Libvirt {
-        message: format!("shutdown failed: {e}"),
-        hint: "VM may not support ACPI shutdown".into(),
-    })?;
-
-    // Brief wait for shutdown
-    for _ in 0..10 {
-        if !is_running(dom) {
-            return Ok(());
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    }
-
-    // Force
-    dom.destroy().map_err(|e| RumError::Libvirt {
-        message: format!("force stop failed: {e}"),
-        hint: "check libvirt permissions".into(),
-    })?;
-    Ok(())
-}
-
-/// Extract the auto-assigned vsock CID from a running domain's live XML.
-fn parse_vsock_cid(dom: &Domain) -> Option<u32> {
-    let xml = dom.get_xml_desc(0).ok()?;
-    domain_xml::parse_vsock_cid(&xml)
 }

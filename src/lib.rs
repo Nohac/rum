@@ -26,4 +26,4 @@ pub mod lifecycle;
 pub mod phase;
 pub mod render;
 pub mod replicon;
-pub mod workers;
+pub mod vm;
