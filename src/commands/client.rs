@@ -71,7 +71,7 @@ pub async fn run_up(
         }
     });
 
-    ecsdk_app::run_async(app, rx).await;
+    ecsdk_app::run_async(&mut app, rx).await;
     Ok(())
 }
 

@@ -64,12 +64,11 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
             commands::client::run_up(&sys_config, reset, detach, &output_format).await?
         }
         Command::Down => {
-            commands::daemon_client::request_shutdown(&sys_config, false).await?;
-            println!("Shutdown requested for '{}'.", sys_config.display_name());
+            commands::daemon_client::request_shutdown(&sys_config, &output_format).await?;
         }
         Command::Destroy => {
             if crate::daemon::is_daemon_running(&sys_config) {
-                let _ = commands::daemon_client::request_shutdown(&sys_config, true).await;
+                let _ = commands::daemon_client::request_force_stop(&sys_config).await;
             }
             commands::destroy::destroy_cleanup(&sys_config).await?;
         }

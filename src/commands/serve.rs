@@ -105,7 +105,7 @@ pub async fn run_daemon(sys_config: &SystemConfig) -> Result<(), RumError> {
     });
 
     // Run the ECS select loop until AppExit is set
-    ecsdk_app::run_async(app, rx).await;
+    ecsdk_app::run_async(&mut app, rx).await;
 
     // Write provisioned marker if we completed a first boot successfully
     if matches!(intent, FlowIntent::FirstBoot | FlowIntent::Reboot) {

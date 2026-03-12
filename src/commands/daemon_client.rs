@@ -1,217 +1,166 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-
 use bevy::app::prelude::*;
 use bevy::ecs::prelude::*;
-use bevy::state::prelude::*;
-use bevy_replicon::prelude::*;
+use bevy_replicon::prelude::ClientTriggerExt;
+use ecsdk_app::Receivers;
 
+use crate::cli::OutputFormat;
 use crate::config::SystemConfig;
 use crate::daemon::StatusInfo;
 use crate::error::RumError;
+use crate::lifecycle::{RumMessage, VmError};
+use crate::phase::VmPhase;
+use crate::render::RumRenderPlugin;
 use crate::replicon::{
-    ForceStopRequest, RumClientPlugin, ShutdownRequest, SshConfigRequest, SshConfigResponse,
-    StatusRequest, StatusResponse,
+    connect_client, DaemonControl, DaemonSnapshot, ForceStopRequest, RumClientCorePlugin,
+    ShutdownRequest,
 };
 
-static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
-
-#[derive(Resource)]
-struct StatusClientState {
-    request_id: u64,
-    sent: bool,
-    result: Arc<Mutex<Option<StatusInfo>>>,
-}
-
-#[derive(Resource)]
-struct SshConfigClientState {
-    request_id: u64,
-    sent: bool,
-    result: Arc<Mutex<Option<Result<String, String>>>>,
-}
-
-#[derive(Resource)]
-struct ShutdownClientState {
-    sent: Arc<Mutex<bool>>,
-    force: bool,
-}
-
-fn next_request_id() -> u64 {
-    REQUEST_ID.fetch_add(1, Ordering::Relaxed)
-}
-
-fn send_status_request(
-    state: Res<State<ClientState>>,
-    mut commands: Commands,
-    mut request: ResMut<StatusClientState>,
-) {
-    if *state.get() != ClientState::Connected || request.sent {
-        return;
+async fn setup_client_app(sys_config: &SystemConfig) -> Result<(App, Receivers<RumMessage>), RumError> {
+    if !crate::daemon::is_daemon_running(sys_config) {
+        return Err(RumError::Daemon {
+            message: format!(
+                "no daemon running for '{}'. Run `rum up` first.",
+                sys_config.display_name()
+            ),
+        });
     }
-    commands.client_trigger(StatusRequest {
-        request_id: request.request_id,
-    });
-    request.sent = true;
+
+    let socket_path = crate::paths::socket_path(&sys_config.id, sys_config.name.as_deref());
+    let stream = tokio::net::UnixStream::connect(&socket_path)
+        .await
+        .map_err(|e| RumError::Daemon {
+            message: format!(
+                "failed to connect to daemon for '{}': {e}",
+                sys_config.display_name()
+            ),
+        })?;
+
+    let (mut app, rx) = ecsdk_app::setup::<RumMessage>();
+    app.add_plugins(RumClientCorePlugin);
+    connect_client(app.world_mut(), stream);
+    Ok((app, rx))
 }
 
-fn receive_status_response(
+fn daemon_snapshot(app: &mut App) -> Option<DaemonSnapshot> {
+    let world = app.world_mut();
+    let mut query = world.query_filtered::<&DaemonSnapshot, With<DaemonControl>>();
+    query.iter(world).next().cloned()
+}
+
+fn shutdown_failure(app: &mut App) -> Option<String> {
+    let world = app.world_mut();
+    let mut query = world.query::<(&VmPhase, Option<&VmError>)>();
+    for (phase, error) in query.iter(world) {
+        if *phase == VmPhase::Failed {
+            return Some(
+                error
+                    .map(|err| err.0.clone())
+                    .unwrap_or_else(|| "shutdown failed".to_string()),
+            );
+        }
+    }
+    None
+}
+
+fn send_shutdown_request(mut commands: Commands) {
+    commands.client_trigger(ShutdownRequest);
+}
+
+fn send_force_stop_request(
+    mut commands: Commands,
     mut exit: ResMut<ecsdk_core::AppExit>,
-    request: Res<StatusClientState>,
-    responses: Query<&StatusResponse>,
 ) {
-    for response in &responses {
-        if response.request_id == request.request_id {
-            *request.result.lock().expect("status result lock poisoned") = Some(StatusInfo {
-                state: response.state.clone(),
-                ips: response.ips.clone(),
-                daemon_running: response.daemon_running,
-            });
+    commands.client_trigger(ForceStopRequest);
+    exit.0 = true;
+}
+
+fn exit_on_daemon_snapshot(
+    snapshots: Query<&DaemonSnapshot, With<DaemonControl>>,
+    mut exit: ResMut<ecsdk_core::AppExit>,
+) {
+    for snapshot in &snapshots {
+        if snapshot.ready {
             exit.0 = true;
             return;
         }
     }
 }
 
-fn send_ssh_config_request(
-    state: Res<State<ClientState>>,
-    mut commands: Commands,
-    mut request: ResMut<SshConfigClientState>,
-) {
-    if *state.get() != ClientState::Connected || request.sent {
-        return;
-    }
-    commands.client_trigger(SshConfigRequest {
-        request_id: request.request_id,
-    });
-    request.sent = true;
-}
-
-fn receive_ssh_config_response(
+fn exit_on_terminal_phase(
     mut exit: ResMut<ecsdk_core::AppExit>,
-    request: Res<SshConfigClientState>,
-    responses: Query<&SshConfigResponse>,
+    phases: Query<&VmPhase, Changed<VmPhase>>,
 ) {
-    for response in &responses {
-        if response.request_id == request.request_id {
-            let result = if response.error.is_empty() {
-                Ok(response.text.clone())
-            } else {
-                Err(response.error.clone())
-            };
-            *request
-                .result
-                .lock()
-                .expect("ssh-config result lock poisoned") = Some(result);
+    for phase in &phases {
+        if phase.is_terminal() {
             exit.0 = true;
             return;
         }
     }
-}
-
-fn send_shutdown_request(
-    state: Res<State<ClientState>>,
-    mut commands: Commands,
-    request: Res<ShutdownClientState>,
-) {
-    if *state.get() != ClientState::Connected {
-        return;
-    }
-
-    let mut sent = request.sent.lock().expect("shutdown sent lock poisoned");
-    if *sent {
-        return;
-    }
-
-    if request.force {
-        commands.client_trigger(ForceStopRequest);
-    } else {
-        commands.client_trigger(ShutdownRequest);
-    }
-    *sent = true;
 }
 
 pub async fn request_status(sys_config: &SystemConfig) -> Result<StatusInfo, RumError> {
-    let socket_path = crate::paths::socket_path(&sys_config.id, sys_config.name.as_deref());
-    let request_id = next_request_id();
-    let result = Arc::new(Mutex::new(None));
+    let (mut app, rx) = setup_client_app(sys_config).await?;
+    app.add_systems(Update, exit_on_daemon_snapshot);
+    ecsdk_app::run_async(&mut app, rx).await;
 
-    let (mut app, rx) = ecsdk_app::setup::<crate::lifecycle::RumMessage>();
-    app.add_plugins(RumClientPlugin {
-        socket_path: socket_path.clone(),
-    });
-    app.insert_resource(StatusClientState {
-        request_id,
-        sent: false,
-        result: result.clone(),
-    });
-    app.add_systems(Update, (send_status_request, receive_status_response));
-    ecsdk_app::run_async(app, rx).await;
-
-    result
-        .lock()
-        .expect("status result lock poisoned")
-        .clone()
+    daemon_snapshot(&mut app)
+        .filter(|snapshot| snapshot.ready)
+        .map(|snapshot| StatusInfo {
+            state: snapshot.state,
+            ips: snapshot.ips,
+            daemon_running: snapshot.daemon_running,
+        })
         .ok_or_else(|| RumError::Daemon {
             message: format!(
-                "did not receive status response from daemon for '{}'",
+                "did not receive status from daemon for '{}'",
                 sys_config.display_name()
             ),
         })
 }
 
 pub async fn request_ssh_config(sys_config: &SystemConfig) -> Result<String, RumError> {
-    let socket_path = crate::paths::socket_path(&sys_config.id, sys_config.name.as_deref());
-    let request_id = next_request_id();
-    let result = Arc::new(Mutex::new(None));
+    let (mut app, rx) = setup_client_app(sys_config).await?;
+    app.add_systems(Update, exit_on_daemon_snapshot);
+    ecsdk_app::run_async(&mut app, rx).await;
 
-    let (mut app, rx) = ecsdk_app::setup::<crate::lifecycle::RumMessage>();
-    app.add_plugins(RumClientPlugin {
-        socket_path: socket_path.clone(),
-    });
-    app.insert_resource(SshConfigClientState {
-        request_id,
-        sent: false,
-        result: result.clone(),
-    });
-    app.add_systems(Update, (send_ssh_config_request, receive_ssh_config_response));
-    ecsdk_app::run_async(app, rx).await;
-
-    result
-        .lock()
-        .expect("ssh-config result lock poisoned")
-        .clone()
+    let snapshot = daemon_snapshot(&mut app)
+        .filter(|snapshot| snapshot.ready)
         .ok_or_else(|| RumError::Daemon {
             message: format!(
-                "did not receive ssh-config response from daemon for '{}'",
+                "did not receive ssh-config from daemon for '{}'",
                 sys_config.display_name()
             ),
-        })?
-        .map_err(|message| RumError::Daemon { message })
-}
+        })?;
 
-pub async fn request_shutdown(sys_config: &SystemConfig, force: bool) -> Result<(), RumError> {
-    let socket_path = crate::paths::socket_path(&sys_config.id, sys_config.name.as_deref());
-    let sent = Arc::new(Mutex::new(false));
-
-    let (mut app, rx) = ecsdk_app::setup::<crate::lifecycle::RumMessage>();
-    app.add_plugins(RumClientPlugin {
-        socket_path: socket_path.clone(),
-    });
-    app.insert_resource(ShutdownClientState {
-        sent: sent.clone(),
-        force,
-    });
-    app.add_systems(Update, send_shutdown_request);
-    ecsdk_app::run_async(app, rx).await;
-
-    if *sent.lock().expect("shutdown sent lock poisoned") {
-        Ok(())
+    if snapshot.ssh_config_error.is_empty() {
+        Ok(snapshot.ssh_config)
     } else {
         Err(RumError::Daemon {
-            message: format!(
-                "could not connect to daemon for '{}'",
-                sys_config.display_name()
-            ),
+            message: snapshot.ssh_config_error,
         })
     }
+}
+
+pub async fn request_shutdown(
+    sys_config: &SystemConfig,
+    output_format: &OutputFormat,
+) -> Result<(), RumError> {
+    let (mut app, rx) = setup_client_app(sys_config).await?;
+    app.add_plugins(RumRenderPlugin(output_format.clone()));
+    app.add_systems(Startup, send_shutdown_request);
+    app.add_systems(Update, exit_on_terminal_phase);
+    ecsdk_app::run_async(&mut app, rx).await;
+
+    if let Some(message) = shutdown_failure(&mut app) {
+        Err(RumError::Daemon { message })
+    } else {
+        Ok(())
+    }
+}
+
+pub async fn request_force_stop(sys_config: &SystemConfig) -> Result<(), RumError> {
+    let (mut app, rx) = setup_client_app(sys_config).await?;
+    app.add_systems(Startup, send_force_stop_request);
+    ecsdk_app::run_async(&mut app, rx).await;
+    Ok(())
 }

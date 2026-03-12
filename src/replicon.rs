@@ -18,16 +18,6 @@ pub struct ShutdownRequest;
 pub struct ForceStopRequest;
 
 #[derive(Event, Serialize, Deserialize)]
-pub struct StatusRequest {
-    pub request_id: u64,
-}
-
-#[derive(Event, Serialize, Deserialize)]
-pub struct SshConfigRequest {
-    pub request_id: u64,
-}
-
-#[derive(Event, Serialize, Deserialize)]
 pub struct ServerExitNotice;
 
 #[derive(Component, Serialize, Deserialize, Default)]
@@ -37,18 +27,13 @@ pub struct DaemonControl;
 pub struct DaemonConfig(pub crate::config::SystemConfig);
 
 #[derive(Component, Serialize, Deserialize, Clone, Default)]
-pub struct StatusResponse {
-    pub request_id: u64,
+pub struct DaemonSnapshot {
+    pub ready: bool,
     pub state: String,
     pub ips: Vec<String>,
     pub daemon_running: bool,
-}
-
-#[derive(Component, Serialize, Deserialize, Clone, Default)]
-pub struct SshConfigResponse {
-    pub request_id: u64,
-    pub text: String,
-    pub error: String,
+    pub ssh_config: String,
+    pub ssh_config_error: String,
 }
 
 // ── Shared replication plugin ────────────────────────────────────
@@ -60,13 +45,10 @@ impl Plugin for SharedReplicationPlugin {
         app.replicate::<VmPhase>();
         app.replicate::<crate::render::StepProgress>();
         app.replicate::<crate::lifecycle::VmError>();
-        app.replicate::<StatusResponse>();
-        app.replicate::<SshConfigResponse>();
+        app.replicate::<DaemonSnapshot>();
         app.add_server_event::<ServerExitNotice>(Channel::Ordered);
         app.add_client_event::<ShutdownRequest>(Channel::Ordered);
         app.add_client_event::<ForceStopRequest>(Channel::Ordered);
-        app.add_client_event::<StatusRequest>(Channel::Ordered);
-        app.add_client_event::<SshConfigRequest>(Channel::Ordered);
     }
 }
 
@@ -86,49 +68,33 @@ fn handle_force_stop_request(
     exit.0 = true;
 }
 
-fn handle_status_request(
-    trigger: On<FromClient<StatusRequest>>,
+fn refresh_daemon_snapshot(
     sys_config: Res<DaemonConfig>,
-    mut query: Query<&mut StatusResponse, With<DaemonControl>>,
+    mut query: Query<&mut DaemonSnapshot, With<DaemonControl>>,
 ) {
-    let Ok(mut response) = query.single_mut() else {
+    let Ok(mut snapshot) = query.single_mut() else {
         return;
     };
-    let status = crate::daemon::current_status(&sys_config.0, true);
-    response.request_id = trigger.event().request_id;
-    response.state = status.state;
-    response.ips = status.ips;
-    response.daemon_running = status.daemon_running;
-}
 
-fn handle_ssh_config_request(
-    trigger: On<FromClient<SshConfigRequest>>,
-    sys_config: Res<DaemonConfig>,
-    mut query: Query<&mut SshConfigResponse, With<DaemonControl>>,
-) {
-    let Ok(mut response) = query.single_mut() else {
-        return;
-    };
-    response.request_id = trigger.event().request_id;
+    let status = crate::daemon::current_status(&sys_config.0, true);
+    snapshot.ready = true;
+    snapshot.state = status.state;
+    snapshot.ips = status.ips;
+    snapshot.daemon_running = status.daemon_running;
     match crate::daemon::ssh_config(&sys_config.0) {
         Ok(text) => {
-            response.text = text;
-            response.error.clear();
+            snapshot.ssh_config = text;
+            snapshot.ssh_config_error.clear();
         }
         Err(error) => {
-            response.text.clear();
-            response.error = error;
+            snapshot.ssh_config.clear();
+            snapshot.ssh_config_error = error;
         }
     }
 }
 
 fn spawn_daemon_control(mut commands: Commands) {
-    commands.spawn((
-        DaemonControl,
-        StatusResponse::default(),
-        SshConfigResponse::default(),
-        Replicated,
-    ));
+    commands.spawn((DaemonControl, DaemonSnapshot::default(), Replicated));
 }
 
 fn send_exit_notice(mut commands: Commands, exit: Res<AppExit>, mut sent: Local<bool>) {
@@ -159,11 +125,9 @@ impl Plugin for RumServerPlugin {
         });
         app.add_systems(Startup, spawn_daemon_control);
 
-        app.add_systems(Update, send_exit_notice);
+        app.add_systems(Update, (refresh_daemon_snapshot, send_exit_notice));
         app.add_observer(handle_shutdown_request);
         app.add_observer(handle_force_stop_request);
-        app.add_observer(handle_status_request);
-        app.add_observer(handle_ssh_config_request);
     }
 }
 
@@ -216,21 +180,36 @@ pub struct RumClientPlugin {
     pub socket_path: std::path::PathBuf,
 }
 
+fn configure_client_runtime(app: &mut App) {
+    app.add_plugins(bevy::state::app::StatesPlugin);
+    app.add_plugins(bevy::time::TimePlugin);
+    app.add_plugins(RepliconPlugins);
+    app.add_plugins(SharedReplicationPlugin);
+    app.add_plugins(ecsdk_replicon::ClientTransportPlugin);
+
+    app.add_observer(on_server_exit);
+    app.add_systems(Update, detect_disconnect);
+}
+
+pub fn connect_client(world: &mut World, stream: tokio::net::UnixStream) {
+    ConnectClientCmd { stream }.apply(world);
+}
+
+pub struct RumClientCorePlugin;
+
+impl Plugin for RumClientCorePlugin {
+    fn build(&self, app: &mut App) {
+        configure_client_runtime(app);
+    }
+}
+
 impl Plugin for RumClientPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(bevy::state::app::StatesPlugin);
-        app.add_plugins(bevy::time::TimePlugin);
-        app.add_plugins(RepliconPlugins);
-        app.add_plugins(SharedReplicationPlugin);
-        app.add_plugins(ecsdk_replicon::ClientTransportPlugin);
-
+        configure_client_runtime(app);
         let socket_path = self.socket_path.clone();
         app.add_systems(Startup, move |mut commands: Commands| {
             spawn_client_connection(&mut commands, socket_path.clone());
         });
-
-        app.add_observer(on_server_exit);
-        app.add_systems(Update, detect_disconnect);
     }
 }
 
