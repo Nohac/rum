@@ -42,11 +42,13 @@ impl Plugin for LifecyclePlugin {
         app.add_observer(super::prepare::on_downloading_image);
         app.add_observer(super::prepare::on_preparing);
         app.add_observer(super::prepare::on_booting);
+        // app.add_observer(super::agent::on_state_change);
         app.add_observer(super::agent::on_connecting_agent);
         app.add_observer(super::provision::on_provisioning);
         app.add_observer(super::agent::on_starting_services);
         app.add_observer(super::stop::on_shutting_down);
         app.add_observer(super::destroy::on_destroying);
+        app.add_observer(super::terminal::on_running);
         app.add_observer(super::terminal::on_stopped);
         app.add_observer(super::terminal::on_destroyed);
         app.add_observer(super::terminal::on_failed);
@@ -56,13 +58,13 @@ impl Plugin for LifecyclePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::app::App;
-    use ecsdk_core::CmdQueue;
     use crate::phase::VmPhase;
     use crate::phase::vm_phase::{
         Booting, ConnectingAgent, Destroyed, Destroying, DownloadingImage, Failed, Preparing,
         Provisioning, Running, ShuttingDown, StartingServices, Stopped, Virgin,
     };
+    use bevy::app::App;
+    use ecsdk_core::CmdQueue;
 
     fn test_app() -> App {
         let mut app = App::new();

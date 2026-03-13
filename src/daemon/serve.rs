@@ -72,19 +72,67 @@ pub fn spawn_background(sys_config: &SystemConfig) -> Result<(), RumError> {
         source: e,
     })?;
 
-    Command::new(exe)
+    let workspace_dir = std::env::current_dir().map_err(|e| RumError::Io {
+        context: "getting current working directory".into(),
+        source: e,
+    })?;
+    let daemon_log = workspace_dir.join("rum-daemon.log");
+    let stdout_log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&daemon_log)
+        .map_err(|e| RumError::Io {
+            context: format!("opening daemon stdio log {}", daemon_log.display()),
+            source: e,
+        })?;
+    let stderr_log = stdout_log.try_clone().map_err(|e| RumError::Io {
+        context: format!("cloning daemon stdio log handle {}", daemon_log.display()),
+        source: e,
+    })?;
+
+    let child = Command::new(exe)
         .args(["--config", &config_path.to_string_lossy(), "serve"])
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(stdout_log))
+        .stderr(Stdio::from(stderr_log))
         .process_group(0)
         .spawn()
         .map_err(|e| RumError::Io {
             context: "spawning daemon process".into(),
             source: e,
-        })?;
+        })
+        .inspect_err(|e| tracing::debug!(?e))?;
+
+    log_daemon_child(child, workspace_dir);
 
     Ok(())
+}
+
+fn log_daemon_child(mut child: std::process::Child, workspace_dir: std::path::PathBuf) {
+    std::thread::spawn(move || {
+        let status = child.wait();
+        let message = match status {
+            Ok(status) => format!(
+                "daemon process exited: pid={} status={status}\n",
+                child.id()
+            ),
+            Err(error) => format!(
+                "failed waiting for daemon process pid={}: {error}\n",
+                child.id()
+            ),
+        };
+
+        for file_name in ["rum-client.log", "rum-daemon.log"] {
+            let path = workspace_dir.join(file_name);
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = std::io::Write::write_all(&mut file, message.as_bytes());
+            }
+        }
+    });
 }
 
 pub fn is_daemon_running(sys_config: &SystemConfig) -> bool {

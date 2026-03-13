@@ -35,6 +35,7 @@ impl ApplyMessage for RumMessage {
                     total_steps,
                 } = data.as_ref();
 
+                tracing::debug!(message = "SpawnVm", ?intent);
                 let sm = super::machine::build_sm_for_intent(*intent);
 
                 let mut entity = world.spawn((

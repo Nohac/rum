@@ -79,42 +79,52 @@ fn start_render_tick_driver(mut commands: Commands) {
 }
 
 fn sync_phase_view(
-    query: Query<(&VmPhase, Option<&VmError>), Changed<VmPhase>>,
     mut terminal: ResMut<InteractiveTerminal>,
     mut state: ResMut<InteractiveRenderState>,
+    phases: Query<(&VmPhase, Option<&VmError>)>,
 ) {
-    for (phase, error) in &query {
-        if Some(*phase) == state.active_phase {
-            continue;
-        }
+    let Some((phase, error)) = phases.iter().next() else {
+        return;
+    };
 
-        if let Some(previous) = state.active_phase.take()
-            && *phase != VmPhase::Failed
-            && let Some(label) = format::completed_phase_label(previous)
-        {
-            flush_permanent_line(&mut terminal, &mut state, &format::completed_line(label));
-        }
+    if state.last_seen_phase == Some(*phase) {
+        return;
+    }
+    state.last_seen_phase = Some(*phase);
 
-        match phase {
-            VmPhase::Failed => {
-                let message = error
-                    .map(|err| format!("Failed: {}", err.0))
-                    .unwrap_or_else(|| "Failed".to_string());
-                flush_permanent_line(&mut terminal, &mut state, &format::failed_line(&message));
-                state.dirty = false;
+    if let Some(previous) = state.active_phase.take()
+        && *phase != VmPhase::Failed
+        && let Some(previous_label) = format::completed_phase_label(previous)
+    {
+        let next_label = format::completed_phase_label(*phase);
+        if next_label != Some(previous_label) {
+            flush_permanent_line(
+                &mut terminal,
+                &mut state,
+                &format::completed_line(previous_label),
+            );
+        }
+    }
+
+    match phase {
+        VmPhase::Failed => {
+            let message = error
+                .map(|err| format!("Failed: {}", err.0))
+                .unwrap_or_else(|| "Failed".to_string());
+            flush_permanent_line(&mut terminal, &mut state, &format::failed_line(&message));
+            state.dirty = false;
+        }
+        VmPhase::Running | VmPhase::Stopped | VmPhase::Destroyed => {
+            if let Some(label) = format::completed_phase_label(*phase) {
+                flush_permanent_line(&mut terminal, &mut state, &format::completed_line(label));
             }
-            VmPhase::Running | VmPhase::Stopped | VmPhase::Destroyed => {
-                if let Some(label) = format::completed_phase_label(*phase) {
-                    flush_permanent_line(&mut terminal, &mut state, &format::completed_line(label));
-                }
-                state.dirty = false;
-            }
-            _ => {
-                if format::active_phase_label(*phase).is_some() {
-                    state.active_phase = Some(*phase);
-                    state.spinner_frame = 0;
-                    state.dirty = true;
-                }
+            state.dirty = false;
+        }
+        _ => {
+            if format::active_phase_label(*phase).is_some() {
+                state.active_phase = Some(*phase);
+                state.spinner_frame = 0;
+                state.dirty = true;
             }
         }
     }
@@ -178,9 +188,6 @@ pub(super) fn build(app: &mut App) {
     app.init_resource::<InteractiveTerminal>();
     app.init_resource::<InteractiveRenderState>();
     app.add_systems(Startup, start_render_tick_driver);
-    app.add_systems(
-        PostUpdate,
-        (sync_phase_view, redraw_active_step, cleanup_terminal).chain(),
-    );
+    app.add_systems(PostUpdate, (sync_phase_view, redraw_active_step, cleanup_terminal).chain());
     app.add_observer(advance_spinner_frame);
 }

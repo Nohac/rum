@@ -15,6 +15,7 @@ pub struct RenderMode(pub OutputFormat);
 
 #[derive(Resource)]
 pub struct InteractiveRenderState {
+    pub last_seen_phase: Option<VmPhase>,
     pub active_phase: Option<VmPhase>,
     pub spinner_frame: usize,
     pub active_line_drawn: bool,
@@ -25,6 +26,7 @@ pub struct InteractiveRenderState {
 impl Default for InteractiveRenderState {
     fn default() -> Self {
         Self {
+            last_seen_phase: None,
             active_phase: None,
             spinner_frame: 0,
             active_line_drawn: false,

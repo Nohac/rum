@@ -39,7 +39,7 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
     }
     let output_format = super::output::resolve_output_format(&cli.output);
     let mode = super::output::resolve_output_mode(&output_format, cli.verbose, cli.quiet);
-    let logging = super::tracing::init_tracing(mode);
+    super::tracing::init_tracing(mode);
 
     if let Command::Serve | Command::Init { .. } | Command::Image { .. } | Command::Skill =
         cli.command
@@ -49,10 +49,6 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
 
     let sys_config = crate::config::load_config(&cli.config)?;
     let logs_dir = crate::paths::logs_dir(&sys_config.id, sys_config.name.as_deref());
-    if matches!(cli.command, Command::Up { .. }) {
-        std::fs::create_dir_all(&logs_dir).ok();
-        logging.file_handle.set_file(&logs_dir.join("rum.log")).ok();
-    }
 
     let backend = backend::create_backend();
 

@@ -6,6 +6,7 @@ use ecsdk_core::CmdQueue;
 
 use crate::cli::OutputFormat;
 use crate::config::SystemConfig;
+use crate::daemon;
 use crate::error::RumError;
 use crate::lifecycle::RumMessage;
 use crate::render::RumRenderPlugin;
@@ -27,7 +28,7 @@ pub async fn run_up(
 
     // Spawn daemon if not already running
     if !daemon_is_running(&socket_path).await {
-        crate::daemon::spawn_background(sys_config)?;
+        daemon::spawn_background(sys_config)?;
         if !wait_for_daemon(&socket_path).await {
             return Err(RumError::Daemon {
                 message: "daemon did not become ready within 10s".into(),

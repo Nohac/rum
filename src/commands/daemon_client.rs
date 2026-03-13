@@ -12,7 +12,7 @@ use crate::phase::VmPhase;
 use crate::render::RumRenderPlugin;
 use crate::replicon::{
     connect_client, DaemonControl, DaemonSnapshot, ForceStopRequest, RumClientCorePlugin,
-    ShutdownRequest,
+    ShutdownRequest, SshConfigRequest, StatusRequest,
 };
 
 async fn setup_client_app(sys_config: &SystemConfig) -> Result<(App, Receivers<RumMessage>), RumError> {
@@ -62,6 +62,18 @@ fn shutdown_failure(app: &mut App) -> Option<String> {
     None
 }
 
+#[derive(Resource, Default)]
+struct StatusRequestState {
+    baseline_revision: Option<u64>,
+    sent: bool,
+}
+
+#[derive(Resource, Default)]
+struct SshConfigRequestState {
+    baseline_revision: Option<u64>,
+    sent: bool,
+}
+
 fn send_shutdown_request(mut commands: Commands) {
     commands.client_trigger(ShutdownRequest);
 }
@@ -74,15 +86,69 @@ fn send_force_stop_request(
     exit.0 = true;
 }
 
-fn exit_on_daemon_snapshot(
+fn request_status_snapshot(
+    mut commands: Commands,
+    snapshots: Query<&DaemonSnapshot, With<DaemonControl>>,
+    mut request: ResMut<StatusRequestState>,
+) {
+    if request.sent {
+        return;
+    }
+    let Ok(snapshot) = snapshots.single() else {
+        return;
+    };
+
+    request.baseline_revision = Some(snapshot.status_revision);
+    request.sent = true;
+    commands.client_trigger(StatusRequest);
+}
+
+fn request_ssh_config_snapshot(
+    mut commands: Commands,
+    snapshots: Query<&DaemonSnapshot, With<DaemonControl>>,
+    mut request: ResMut<SshConfigRequestState>,
+) {
+    if request.sent {
+        return;
+    }
+    let Ok(snapshot) = snapshots.single() else {
+        return;
+    };
+
+    request.baseline_revision = Some(snapshot.ssh_config_revision);
+    request.sent = true;
+    commands.client_trigger(SshConfigRequest);
+}
+
+fn exit_on_status_snapshot(
+    request: Res<StatusRequestState>,
     snapshots: Query<&DaemonSnapshot, With<DaemonControl>>,
     mut exit: ResMut<ecsdk_core::AppExit>,
 ) {
-    for snapshot in &snapshots {
-        if snapshot.ready {
-            exit.0 = true;
-            return;
-        }
+    let Some(baseline) = request.baseline_revision else {
+        return;
+    };
+    let Ok(snapshot) = snapshots.single() else {
+        return;
+    };
+    if request.sent && snapshot.status_ready && snapshot.status_revision > baseline {
+        exit.0 = true;
+    }
+}
+
+fn exit_on_ssh_config_snapshot(
+    request: Res<SshConfigRequestState>,
+    snapshots: Query<&DaemonSnapshot, With<DaemonControl>>,
+    mut exit: ResMut<ecsdk_core::AppExit>,
+) {
+    let Some(baseline) = request.baseline_revision else {
+        return;
+    };
+    let Ok(snapshot) = snapshots.single() else {
+        return;
+    };
+    if request.sent && snapshot.ssh_config_ready && snapshot.ssh_config_revision > baseline {
+        exit.0 = true;
     }
 }
 
@@ -100,11 +166,12 @@ fn exit_on_terminal_phase(
 
 pub async fn request_status(sys_config: &SystemConfig) -> Result<StatusInfo, RumError> {
     let (mut app, rx) = setup_client_app(sys_config).await?;
-    app.add_systems(Update, exit_on_daemon_snapshot);
+    app.init_resource::<StatusRequestState>();
+    app.add_systems(Update, (request_status_snapshot, exit_on_status_snapshot).chain());
     ecsdk_app::run_async(&mut app, rx).await;
 
     daemon_snapshot(&mut app)
-        .filter(|snapshot| snapshot.ready)
+        .filter(|snapshot| snapshot.status_ready)
         .map(|snapshot| StatusInfo {
             state: snapshot.state,
             ips: snapshot.ips,
@@ -120,11 +187,15 @@ pub async fn request_status(sys_config: &SystemConfig) -> Result<StatusInfo, Rum
 
 pub async fn request_ssh_config(sys_config: &SystemConfig) -> Result<String, RumError> {
     let (mut app, rx) = setup_client_app(sys_config).await?;
-    app.add_systems(Update, exit_on_daemon_snapshot);
+    app.init_resource::<SshConfigRequestState>();
+    app.add_systems(
+        Update,
+        (request_ssh_config_snapshot, exit_on_ssh_config_snapshot).chain(),
+    );
     ecsdk_app::run_async(&mut app, rx).await;
 
     let snapshot = daemon_snapshot(&mut app)
-        .filter(|snapshot| snapshot.ready)
+        .filter(|snapshot| snapshot.ssh_config_ready)
         .ok_or_else(|| RumError::Daemon {
             message: format!(
                 "did not receive ssh-config from daemon for '{}'",

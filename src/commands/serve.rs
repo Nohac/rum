@@ -1,7 +1,4 @@
 use ecsdk_core::{MessageQueue, WakeSignal};
-use tracing_subscriber::Layer;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::config::SystemConfig;
 use crate::error::RumError;
@@ -39,39 +36,36 @@ pub async fn run_daemon(sys_config: &SystemConfig) -> Result<(), RumError> {
             Err(_) => VmState::Virgin,
         }
     };
+    tracing::debug!(
+        vm = sys_config.display_name(),
+        ?initial_state,
+        "detected initial VM state"
+    );
 
     // Build script names and select intent
     let (system_scripts, boot_scripts) = build_script_names(sys_config);
     let (intent, initial_phase, scripts, total_steps) =
         select_intent(&initial_state, system_scripts, boot_scripts)?;
+    tracing::debug!(
+        vm = sys_config.display_name(),
+        ?intent,
+        ?initial_phase,
+        total_steps,
+        scripts = ?scripts,
+        "selected lifecycle intent and script queue"
+    );
 
     // Set up ECS app with lifecycle + server (no render)
     let (mut app, rx) = ecsdk_app::setup::<RumMessage>();
 
-    // Set up tracing: ecsdk layer (routes tracing events into ECS) + file layer
+    // Set up tracing: one shared tracing configuration for daemon mode.
     let wake = app.world().resource::<WakeSignal>().clone();
-    let (tracing_layer, tracing_receiver) = ecsdk_tracing::setup(wake);
+    let workspace_daemon_log = std::env::current_dir()
+        .ok()
+        .map(|dir| dir.join("rum-daemon.log"));
+    let tracing = crate::app::init_daemon_tracing(wake, workspace_daemon_log.as_deref());
 
-    let logs_dir = crate::paths::logs_dir(id, name_opt);
-    std::fs::create_dir_all(&logs_dir).ok();
-    let (file_writer, file_handle) = crate::logging::DeferredFileWriter::new();
-    file_handle.set_file(&logs_dir.join("rum.log")).ok();
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_ansi(false)
-        .with_writer(file_writer)
-        .with_filter(tracing_subscriber::EnvFilter::new("rum=debug"));
-
-    tracing_subscriber::registry()
-        .with(
-            tracing_layer.with_filter(
-                tracing_subscriber::filter::Targets::new()
-                    .with_target("rum", tracing::Level::DEBUG),
-            ),
-        )
-        .with(file_layer)
-        .init();
-
-    app.add_plugins(ecsdk_tracing::TracingPlugin::new(tracing_receiver));
+    app.add_plugins(ecsdk_tracing::TracingPlugin::new(tracing.tracing_receiver));
     app.add_plugins(LifecyclePlugin);
     app.add_plugins(RumServerPlugin {
         socket_path: socket_path.clone(),
@@ -107,14 +101,6 @@ pub async fn run_daemon(sys_config: &SystemConfig) -> Result<(), RumError> {
     // Run the ECS select loop until AppExit is set
     ecsdk_app::run_async(&mut app, rx).await;
 
-    // Write provisioned marker if we completed a first boot successfully
-    if matches!(intent, FlowIntent::FirstBoot | FlowIntent::Reboot) {
-        let marker = crate::paths::provisioned_marker(id, name_opt);
-        if !marker.exists() {
-            let _ = tokio::fs::write(&marker, b"").await;
-        }
-    }
-
     // Cleanup
     crate::daemon::abort_handles(&service_handles);
     let _ = std::fs::remove_file(&socket_path);
@@ -141,6 +127,15 @@ fn build_script_names(sys_config: &SystemConfig) -> (Vec<String>, Vec<String>) {
     if config.provision.boot.is_some() {
         boot_scripts.push("rum-boot".to_string());
     }
+
+    tracing::debug!(
+        vm = sys_config.display_name(),
+        drives = drives.len(),
+        filesystems = resolved_fs.len(),
+        system_scripts = ?system_scripts,
+        boot_scripts = ?boot_scripts,
+        "built lifecycle script names"
+    );
 
     (system_scripts, boot_scripts)
 }

@@ -18,6 +18,12 @@ pub struct ShutdownRequest;
 pub struct ForceStopRequest;
 
 #[derive(Event, Serialize, Deserialize)]
+pub struct StatusRequest;
+
+#[derive(Event, Serialize, Deserialize)]
+pub struct SshConfigRequest;
+
+#[derive(Event, Serialize, Deserialize)]
 pub struct ServerExitNotice;
 
 #[derive(Component, Serialize, Deserialize, Default)]
@@ -28,10 +34,13 @@ pub struct DaemonConfig(pub crate::config::SystemConfig);
 
 #[derive(Component, Serialize, Deserialize, Clone, Default)]
 pub struct DaemonSnapshot {
-    pub ready: bool,
+    pub status_ready: bool,
+    pub status_revision: u64,
     pub state: String,
     pub ips: Vec<String>,
     pub daemon_running: bool,
+    pub ssh_config_ready: bool,
+    pub ssh_config_revision: u64,
     pub ssh_config: String,
     pub ssh_config_error: String,
 }
@@ -49,6 +58,8 @@ impl Plugin for SharedReplicationPlugin {
         app.add_server_event::<ServerExitNotice>(Channel::Ordered);
         app.add_client_event::<ShutdownRequest>(Channel::Ordered);
         app.add_client_event::<ForceStopRequest>(Channel::Ordered);
+        app.add_client_event::<StatusRequest>(Channel::Ordered);
+        app.add_client_event::<SshConfigRequest>(Channel::Ordered);
     }
 }
 
@@ -68,7 +79,8 @@ fn handle_force_stop_request(
     exit.0 = true;
 }
 
-fn refresh_daemon_snapshot(
+fn handle_status_request(
+    _trigger: On<FromClient<StatusRequest>>,
     sys_config: Res<DaemonConfig>,
     mut query: Query<&mut DaemonSnapshot, With<DaemonControl>>,
 ) {
@@ -77,10 +89,24 @@ fn refresh_daemon_snapshot(
     };
 
     let status = crate::daemon::current_status(&sys_config.0, true);
-    snapshot.ready = true;
+    snapshot.status_revision += 1;
+    snapshot.status_ready = true;
     snapshot.state = status.state;
     snapshot.ips = status.ips;
     snapshot.daemon_running = status.daemon_running;
+}
+
+fn handle_ssh_config_request(
+    _trigger: On<FromClient<SshConfigRequest>>,
+    sys_config: Res<DaemonConfig>,
+    mut query: Query<&mut DaemonSnapshot, With<DaemonControl>>,
+) {
+    let Ok(mut snapshot) = query.single_mut() else {
+        return;
+    };
+
+    snapshot.ssh_config_revision += 1;
+    snapshot.ssh_config_ready = true;
     match crate::daemon::ssh_config(&sys_config.0) {
         Ok(text) => {
             snapshot.ssh_config = text;
@@ -125,9 +151,11 @@ impl Plugin for RumServerPlugin {
         });
         app.add_systems(Startup, spawn_daemon_control);
 
-        app.add_systems(Update, (refresh_daemon_snapshot, send_exit_notice));
+        app.add_systems(Update, send_exit_notice);
         app.add_observer(handle_shutdown_request);
         app.add_observer(handle_force_stop_request);
+        app.add_observer(handle_status_request);
+        app.add_observer(handle_ssh_config_request);
     }
 }
 

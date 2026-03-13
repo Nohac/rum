@@ -1,5 +1,6 @@
 use bevy::ecs::prelude::*;
 
+use crate::phase::FlowIntent;
 use crate::phase::vm_phase::*;
 use crate::phase::VmPhase;
 
@@ -20,6 +21,30 @@ pub fn on_stopped(_trigger: On<Insert, Stopped>, mut exit: ResMut<ecsdk_core::Ap
 
 pub fn on_destroyed(_trigger: On<Insert, Destroyed>, mut exit: ResMut<ecsdk_core::AppExit>) {
     exit.0 = true;
+}
+
+pub fn on_running(
+    trigger: On<Insert, Running>,
+    intents: Query<&FlowIntent>,
+    configs: Query<&crate::lifecycle::VmConfig>,
+) {
+    let entity = trigger.event_target();
+    let Ok(intent) = intents.get(entity) else {
+        return;
+    };
+    if !matches!(intent, FlowIntent::FirstBoot | FlowIntent::Reboot) {
+        return;
+    }
+
+    let Ok(config) = configs.get(entity) else {
+        return;
+    };
+
+    let sys_config = &config.0;
+    let marker = crate::paths::provisioned_marker(&sys_config.id, sys_config.name.as_deref());
+    if !marker.exists() {
+        let _ = std::fs::write(marker, b"");
+    }
 }
 
 pub fn on_failed(

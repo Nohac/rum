@@ -24,12 +24,14 @@ pub fn on_downloading_image(
         return;
     };
     let base = config.0.config.image.base.clone();
+    tracing::debug!(entity = ?entity, base_image = %base, "entered DownloadingImage");
 
     commands.entity(entity).spawn_task(move |cmd: Tq| async move {
         let entity = cmd.entity();
         let cache = crate::paths::cache_dir();
         match crate::vm::prepare::ensure_image(&base, &cache).await {
             Ok(path) => {
+                tracing::debug!(entity = ?entity, path = %path.display(), "base image ready");
                 cmd.send(move |world: &mut World| {
                     world.entity_mut(entity).insert(BaseImagePath(path));
                     world.entity_mut(entity).insert(Done::Success);
@@ -38,6 +40,7 @@ pub fn on_downloading_image(
             }
             Err(e) => {
                 let msg = e.to_string();
+                tracing::debug!(entity = ?entity, error = %msg, "base image download failed");
                 cmd.send(move |world: &mut World| {
                     world
                         .entity_mut(entity)
@@ -68,11 +71,13 @@ pub fn on_preparing(
     };
     let sc = config.0.clone();
     let base_path = base_image.0.clone();
+    tracing::debug!(entity = ?entity, base_image = %base_path.display(), "entered Preparing");
 
     commands.entity(entity).spawn_task(move |cmd: Tq| async move {
         let entity = cmd.entity();
         match crate::vm::prepare::prepare_vm(&sc, &base_path).await {
             Ok(()) => {
+                tracing::debug!(entity = ?entity, "vm preparation completed");
                 cmd.send(move |world: &mut World| {
                     world.entity_mut(entity).insert(Done::Success);
                 })
@@ -80,6 +85,7 @@ pub fn on_preparing(
             }
             Err(e) => {
                 let msg = e.to_string();
+                tracing::debug!(entity = ?entity, error = %msg, "vm preparation failed");
                 cmd.send(move |world: &mut World| {
                     world
                         .entity_mut(entity)
@@ -101,11 +107,13 @@ pub fn on_booting(
         return;
     };
     let sc = config.0.clone();
+    tracing::debug!(entity = ?entity, vm = sc.display_name(), "entered Booting");
 
     commands.entity(entity).spawn_task(move |cmd: Tq| async move {
         let entity = cmd.entity();
         match crate::vm::boot::boot_vm(&sc).await {
             Ok(cid) => {
+                tracing::debug!(entity = ?entity, vsock_cid = cid, "vm boot completed");
                 cmd.send(move |world: &mut World| {
                     world.entity_mut(entity).insert(super::agent::VsockCid(cid));
                     world.entity_mut(entity).insert(Done::Success);
@@ -114,6 +122,7 @@ pub fn on_booting(
             }
             Err(e) => {
                 let msg = e.to_string();
+                tracing::debug!(entity = ?entity, error = %msg, "vm boot failed");
                 cmd.send(move |world: &mut World| {
                     world
                         .entity_mut(entity)
