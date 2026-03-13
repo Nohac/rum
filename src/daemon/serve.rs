@@ -20,6 +20,8 @@ pub(crate) fn abort_handles(handles: &ServiceHandles) {
     }
 }
 
+pub const READY_LINE: &str = "RUM_DAEMON_READY";
+
 pub(crate) async fn start_services(sys_config: &SystemConfig) -> Result<ServiceHandles, RumError> {
     let config = &sys_config.config;
 
@@ -54,9 +56,10 @@ pub(crate) async fn start_services(sys_config: &SystemConfig) -> Result<ServiceH
 
 // ── Daemon spawning ─────────────────────────────────────────────────
 
-pub fn spawn_background(sys_config: &SystemConfig) -> Result<(), RumError> {
+pub async fn spawn_background(sys_config: &SystemConfig) -> Result<(), RumError> {
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
+    use std::time::Duration;
 
     let exe = std::env::current_exe().map_err(|e| RumError::Io {
         context: "getting current executable path".into(),
@@ -77,7 +80,7 @@ pub fn spawn_background(sys_config: &SystemConfig) -> Result<(), RumError> {
         source: e,
     })?;
     let daemon_log = workspace_dir.join("rum-daemon.log");
-    let stdout_log = std::fs::OpenOptions::new()
+    let stderr_log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&daemon_log)
@@ -85,15 +88,11 @@ pub fn spawn_background(sys_config: &SystemConfig) -> Result<(), RumError> {
             context: format!("opening daemon stdio log {}", daemon_log.display()),
             source: e,
         })?;
-    let stderr_log = stdout_log.try_clone().map_err(|e| RumError::Io {
-        context: format!("cloning daemon stdio log handle {}", daemon_log.display()),
-        source: e,
-    })?;
 
-    let child = Command::new(exe)
+    let mut child = Command::new(exe)
         .args(["--config", &config_path.to_string_lossy(), "serve"])
         .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout_log))
+        .stdout(Stdio::piped())
         .stderr(Stdio::from(stderr_log))
         .process_group(0)
         .spawn()
@@ -103,9 +102,76 @@ pub fn spawn_background(sys_config: &SystemConfig) -> Result<(), RumError> {
         })
         .inspect_err(|e| tracing::debug!(?e))?;
 
-    log_daemon_child(child, workspace_dir);
+    let stdout = child.stdout.take().ok_or_else(|| RumError::Daemon {
+        message: "daemon stdout was not captured".into(),
+    })?;
 
-    Ok(())
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let log_path = daemon_log.clone();
+    std::thread::spawn(move || {
+        use std::io::{BufRead, Read};
+
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut line = String::new();
+        let ready = match reader.read_line(&mut line) {
+            Ok(0) => Err("daemon exited before signaling readiness".to_string()),
+            Ok(_) => {
+                if line.trim_end() == READY_LINE {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "daemon emitted unexpected startup output: {}",
+                        line.trim_end()
+                    ))
+                }
+            }
+            Err(error) => Err(format!("failed reading daemon startup output: {error}")),
+        };
+        let _ = ready_tx.send(ready);
+
+        if let Ok(mut log) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            let mut buffer = [0_u8; 4096];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let _ = std::io::Write::write_all(&mut log, &buffer[..n]);
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+    });
+
+    match tokio::time::timeout(Duration::from_secs(10), ready_rx).await {
+        Ok(Ok(Ok(()))) => {
+            log_daemon_child(child, workspace_dir);
+            Ok(())
+        }
+        Ok(Ok(Err(message))) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(RumError::Daemon { message })
+        }
+        Ok(Err(_)) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(RumError::Daemon {
+                message: "daemon readiness channel closed unexpectedly".into(),
+            })
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(RumError::Daemon {
+                message: "daemon did not become ready within 10s".into(),
+            })
+        }
+    }
 }
 
 fn log_daemon_child(mut child: std::process::Child, workspace_dir: std::path::PathBuf) {

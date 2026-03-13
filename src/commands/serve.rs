@@ -1,4 +1,5 @@
 use ecsdk_core::{MessageQueue, WakeSignal};
+use std::io::Write;
 
 use crate::config::SystemConfig;
 use crate::error::RumError;
@@ -72,6 +73,9 @@ pub async fn run_daemon(sys_config: &SystemConfig) -> Result<(), RumError> {
     });
     app.insert_resource(crate::replicon::DaemonConfig(sys_config.clone()));
     let service_handles = crate::daemon::start_services(sys_config).await?;
+
+    let _ = writeln!(std::io::stdout(), "{}", crate::daemon::READY_LINE);
+    let _ = std::io::stdout().flush();
 
     // Send the SpawnVm message to kick off the state machine
     let state_queue = app.world().resource::<MessageQueue<RumMessage>>().clone();

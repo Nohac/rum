@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use bevy::ecs::prelude::*;
 use bevy_replicon::shared::message::client_event::ClientTriggerExt;
 use ecsdk_core::CmdQueue;
@@ -28,12 +26,7 @@ pub async fn run_up(
 
     // Spawn daemon if not already running
     if !daemon_is_running(&socket_path).await {
-        daemon::spawn_background(sys_config)?;
-        if !wait_for_daemon(&socket_path).await {
-            return Err(RumError::Daemon {
-                message: "daemon did not become ready within 10s".into(),
-            });
-        }
+        daemon::spawn_background(sys_config).await?;
     }
 
     // --detach: daemon is running, we're done
@@ -79,15 +72,4 @@ pub async fn run_up(
 /// Check if a daemon is already listening on the socket.
 async fn daemon_is_running(socket_path: &std::path::Path) -> bool {
     tokio::net::UnixStream::connect(socket_path).await.is_ok()
-}
-
-/// Wait for the daemon to become ready (socket connectable).
-async fn wait_for_daemon(socket_path: &std::path::Path) -> bool {
-    for _ in 0..50 {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        if daemon_is_running(socket_path).await {
-            return true;
-        }
-    }
-    false
 }
