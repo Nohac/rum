@@ -1,15 +1,29 @@
 use bevy::ecs::prelude::*;
 use bevy_replicon::prelude::Replicated;
 use ecsdk_core::ApplyMessage;
+use ecsdk_tasks::TaskQueue;
 use seldom_state::prelude::*;
 
 use crate::config::SystemConfig;
 use crate::phase::{FlowIntent, ShutdownRequested, VmPhase};
 
+#[derive(Component, Clone, Debug, PartialEq, Eq)]
+pub struct VmIdentity(pub String);
+
+impl VmIdentity {
+    pub fn from_config(sys_config: &SystemConfig) -> Self {
+        Self(sys_config.display_name().to_string())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum RumMessage {
     SpawnVm(Box<SpawnVmData>),
-    MarkDone { entity: Entity, success: bool },
+    UpdateVmPhase {
+        vm: VmIdentity,
+        success: bool,
+        error: Option<String>,
+    },
     RequestShutdown,
     RequestForceStop,
 }
@@ -21,6 +35,16 @@ pub struct SpawnVmData {
     pub initial_phase: VmPhase,
     pub scripts: Vec<String>,
     pub total_steps: usize,
+}
+
+pub fn update_vm_phase(
+    queue: &TaskQueue<RumMessage>,
+    vm: VmIdentity,
+    success: bool,
+    error: Option<String>,
+) {
+    queue.send_state(RumMessage::UpdateVmPhase { vm, success, error });
+    queue.wake();
 }
 
 impl ApplyMessage for RumMessage {
@@ -39,6 +63,7 @@ impl ApplyMessage for RumMessage {
                 let sm = super::machine::build_sm_for_intent(*intent);
 
                 let mut entity = world.spawn((
+                    VmIdentity::from_config(sys_config),
                     super::prepare::VmConfig(sys_config.clone()),
                     *intent,
                     *initial_phase,
@@ -52,8 +77,23 @@ impl ApplyMessage for RumMessage {
                 ));
                 initial_phase.insert_marker_world(&mut entity);
             }
-            Self::MarkDone { entity, success } => {
-                if let Ok(mut e) = world.get_entity_mut(*entity) {
+            Self::UpdateVmPhase { vm, success, error } => {
+                let target = {
+                    let mut query = world.query::<(Entity, &VmIdentity)>();
+                    query.iter(world).find_map(|(entity, identity)| {
+                        (identity.0 == vm.0).then_some(entity)
+                    })
+                };
+
+                let Some(target) = target else {
+                    tracing::warn!(vm = %vm.0, "received UpdateVmPhase for unknown VM");
+                    return;
+                };
+
+                if let Ok(mut e) = world.get_entity_mut(target) {
+                    if let Some(error) = error {
+                        e.insert(super::terminal::VmError(error.clone()));
+                    }
                     if *success {
                         e.insert(Done::Success);
                     } else {

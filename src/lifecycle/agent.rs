@@ -19,6 +19,7 @@ pub fn on_connecting_agent(
     trigger: On<Insert, ConnectingAgent>,
     mut commands: Commands,
     cids: Query<&VsockCid>,
+    identities: Query<&super::VmIdentity>,
 ) {
     let entity = trigger.event_target();
     let Ok(cid) = cids.get(entity) else {
@@ -28,7 +29,11 @@ pub fn on_connecting_agent(
         ));
         return;
     };
+    let Ok(identity) = identities.get(entity) else {
+        return;
+    };
     let cid = cid.0;
+    let vm = identity.clone();
     tracing::debug!(entity = ?entity, vsock_cid = cid, "entered ConnectingAgent");
 
     commands
@@ -42,20 +47,14 @@ pub fn on_connecting_agent(
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     cmd.send(move |world: &mut World| {
                         world.entity_mut(entity).insert(AgentHandle(client));
-                        world.entity_mut(entity).insert(Done::Success);
-                    })
-                    .wake();
+                    });
+                    super::update_vm_phase(&cmd, vm, true, None);
                 }
                 Err(e) => {
                     let msg = e.to_string();
                     tracing::debug!(entity = ?entity, error = %msg, "agent connection failed");
                     tokio::time::sleep(Duration::from_secs(1)).await;
-                    cmd.send(move |world: &mut World| {
-                        world
-                            .entity_mut(entity)
-                            .insert((super::terminal::VmError(msg), Done::Failure));
-                    })
-                    .wake();
+                    super::update_vm_phase(&cmd, vm, false, Some(msg));
                 }
             }
         });
@@ -66,13 +65,18 @@ pub fn on_starting_services(
     mut commands: Commands,
     configs: Query<&super::prepare::VmConfig>,
     cids: Query<&VsockCid>,
+    identities: Query<&super::VmIdentity>,
 ) {
     let entity = trigger.event_target();
     let Ok(config) = configs.get(entity) else {
         return;
     };
+    let Ok(identity) = identities.get(entity) else {
+        return;
+    };
     let cid = cids.get(entity).ok().map(|c| c.0);
     let sc = config.0.clone();
+    let vm = identity.clone();
     tracing::debug!(
         entity = ?entity,
         vm = sc.display_name(),
@@ -84,27 +88,18 @@ pub fn on_starting_services(
         let entity = cmd.entity();
         let Some(cid) = cid else {
             tracing::debug!(entity = ?entity, "skipping services start because vsock CID is absent");
-            cmd.send(move |world: &mut World| {
-                world.entity_mut(entity).insert(Done::Success);
-            })
-            .wake();
+            super::update_vm_phase(&cmd, vm, true, None);
             return;
         };
         match crate::vm::services::start_services(cid, &sc).await {
             Ok(_handles) => {
                 tracing::debug!(entity = ?entity, "services started");
-                cmd.send(move |world: &mut World| {
-                    world.entity_mut(entity).insert(Done::Success);
-                })
-                .wake();
+                super::update_vm_phase(&cmd, vm, true, None);
             }
             Err(e) => {
                 tracing::warn!("failed to start services: {e}");
                 tracing::debug!(entity = ?entity, error = %e, "services failed to start; continuing");
-                cmd.send(move |world: &mut World| {
-                    world.entity_mut(entity).insert(Done::Success);
-                })
-                .wake();
+                super::update_vm_phase(&cmd, vm, true, None);
             }
         }
     });

@@ -36,11 +36,15 @@ pub fn on_provisioning(
     configs: Query<&super::prepare::VmConfig>,
     agents: Query<&super::agent::AgentHandle>,
     scripts: Query<&ScriptQueue>,
+    identities: Query<&super::VmIdentity>,
 ) {
     tracing::debug!("entered Provisioning");
     let entity = trigger.event_target();
     let Ok(config) = configs.get(entity) else {
         tracing::debug!(entity = ?entity, "entered Provisioning without VmConfig");
+        return;
+    };
+    let Ok(identity) = identities.get(entity) else {
         return;
     };
     let Ok(agent) = agents.get(entity) else {
@@ -66,15 +70,14 @@ pub fn on_provisioning(
     let sc = config.0.clone();
     let agent_client = agent.0.clone();
     let all_scripts = script_queue.scripts.clone();
+    let vm = identity.clone();
 
     commands.entity(entity).spawn_task(move |cmd: Tq| async move {
-        let entity = cmd.entity();
-
         let mut provision_scripts = Vec::new();
         for name in &all_scripts {
             if let Some(script) = build_provision_script(&sc, name) {
                 tracing::debug!(
-                    entity = ?entity,
+                    vm = %vm.0,
                     script = %script.name,
                     run_on = ?script.run_on,
                     title = %script.title,
@@ -82,41 +85,30 @@ pub fn on_provisioning(
                 );
                 provision_scripts.push(script);
             } else {
-                tracing::debug!(entity = ?entity, script = %name, "provision script was omitted");
+                tracing::debug!(vm = %vm.0, script = %name, "provision script was omitted");
             }
         }
 
         if provision_scripts.is_empty() {
-            tracing::debug!(entity = ?entity, "no provision scripts built; marking provisioning done");
-            cmd.send(move |world: &mut World| {
-                world.entity_mut(entity).insert(Done::Success);
-            })
-            .wake();
+            tracing::debug!(vm = %vm.0, "no provision scripts built; marking provisioning done");
+            super::update_vm_phase(&cmd, vm, true, None);
             return;
         }
 
         let script_names: Vec<String> = provision_scripts.iter().map(|script| script.name.clone()).collect();
-        tracing::debug!(entity = ?entity, scripts = ?script_names, "starting provision RPC");
+        tracing::debug!(vm = %vm.0, scripts = ?script_names, "starting provision RPC");
 
         let logs_dir = crate::paths::logs_dir(&sc.id, sc.name.as_deref());
         match crate::vm::services::run_provision(&agent_client, provision_scripts, &logs_dir).await
         {
             Ok(()) => {
-                tracing::debug!(entity = ?entity, "provisioning completed");
-                cmd.send(move |world: &mut World| {
-                    world.entity_mut(entity).insert(Done::Success);
-                })
-                .wake();
+                tracing::debug!(vm = %vm.0, "provisioning completed");
+                super::update_vm_phase(&cmd, vm, true, None);
             }
             Err(e) => {
                 let msg = e.to_string();
-                tracing::debug!(entity = ?entity, error = %msg, "provisioning failed");
-                cmd.send(move |world: &mut World| {
-                    world
-                        .entity_mut(entity)
-                        .insert((super::terminal::VmError(msg), Done::Failure));
-                })
-                .wake();
+                tracing::debug!(vm = %vm.0, error = %msg, "provisioning failed");
+                super::update_vm_phase(&cmd, vm, false, Some(msg));
             }
         }
     });

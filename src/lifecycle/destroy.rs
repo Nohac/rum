@@ -18,30 +18,26 @@ pub fn on_destroying(
     trigger: On<Insert, Destroying>,
     mut commands: Commands,
     configs: Query<&super::prepare::VmConfig>,
+    identities: Query<&super::VmIdentity>,
 ) {
     let entity = trigger.event_target();
     let Ok(config) = configs.get(entity) else {
         return;
     };
+    let Ok(identity) = identities.get(entity) else {
+        return;
+    };
     let sc = config.0.clone();
+    let vm = identity.clone();
 
     commands.entity(entity).spawn_task(move |cmd: Tq| async move {
-        let entity = cmd.entity();
         match crate::vm::destroy::destroy_vm(&sc).await {
             Ok(()) => {
-                cmd.send(move |world: &mut World| {
-                    world.entity_mut(entity).insert(Done::Success);
-                })
-                .wake();
+                super::update_vm_phase(&cmd, vm, true, None);
             }
             Err(e) => {
                 let msg = e.to_string();
-                cmd.send(move |world: &mut World| {
-                    world
-                        .entity_mut(entity)
-                        .insert((super::terminal::VmError(msg), Done::Failure));
-                })
-                .wake();
+                super::update_vm_phase(&cmd, vm, false, Some(msg));
             }
         }
     });

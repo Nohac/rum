@@ -18,12 +18,17 @@ pub fn on_downloading_image(
     trigger: On<Insert, DownloadingImage>,
     mut commands: Commands,
     configs: Query<&VmConfig>,
+    identities: Query<&super::VmIdentity>,
 ) {
     let entity = trigger.event_target();
     let Ok(config) = configs.get(entity) else {
         return;
     };
+    let Ok(identity) = identities.get(entity) else {
+        return;
+    };
     let base = config.0.config.image.base.clone();
+    let vm = identity.clone();
     tracing::debug!(entity = ?entity, base_image = %base, "entered DownloadingImage");
 
     commands.entity(entity).spawn_task(move |cmd: Tq| async move {
@@ -34,19 +39,13 @@ pub fn on_downloading_image(
                 tracing::debug!(entity = ?entity, path = %path.display(), "base image ready");
                 cmd.send(move |world: &mut World| {
                     world.entity_mut(entity).insert(BaseImagePath(path));
-                    world.entity_mut(entity).insert(Done::Success);
-                })
-                .wake();
+                });
+                super::update_vm_phase(&cmd, vm, true, None);
             }
             Err(e) => {
                 let msg = e.to_string();
                 tracing::debug!(entity = ?entity, error = %msg, "base image download failed");
-                cmd.send(move |world: &mut World| {
-                    world
-                        .entity_mut(entity)
-                        .insert((super::terminal::VmError(msg), Done::Failure));
-                })
-                .wake();
+                super::update_vm_phase(&cmd, vm, false, Some(msg));
             }
         }
     });
@@ -57,9 +56,13 @@ pub fn on_preparing(
     mut commands: Commands,
     configs: Query<&VmConfig>,
     images: Query<&BaseImagePath>,
+    identities: Query<&super::VmIdentity>,
 ) {
     let entity = trigger.event_target();
     let Ok(config) = configs.get(entity) else {
+        return;
+    };
+    let Ok(identity) = identities.get(entity) else {
         return;
     };
     let Ok(base_image) = images.get(entity) else {
@@ -71,27 +74,19 @@ pub fn on_preparing(
     };
     let sc = config.0.clone();
     let base_path = base_image.0.clone();
+    let vm = identity.clone();
     tracing::debug!(entity = ?entity, base_image = %base_path.display(), "entered Preparing");
 
     commands.entity(entity).spawn_task(move |cmd: Tq| async move {
-        let entity = cmd.entity();
         match crate::vm::prepare::prepare_vm(&sc, &base_path).await {
             Ok(()) => {
-                tracing::debug!(entity = ?entity, "vm preparation completed");
-                cmd.send(move |world: &mut World| {
-                    world.entity_mut(entity).insert(Done::Success);
-                })
-                .wake();
+                tracing::debug!(vm = %vm.0, "vm preparation completed");
+                super::update_vm_phase(&cmd, vm, true, None);
             }
             Err(e) => {
                 let msg = e.to_string();
-                tracing::debug!(entity = ?entity, error = %msg, "vm preparation failed");
-                cmd.send(move |world: &mut World| {
-                    world
-                        .entity_mut(entity)
-                        .insert((super::terminal::VmError(msg), Done::Failure));
-                })
-                .wake();
+                tracing::debug!(vm = %vm.0, error = %msg, "vm preparation failed");
+                super::update_vm_phase(&cmd, vm, false, Some(msg));
             }
         }
     });
@@ -101,12 +96,17 @@ pub fn on_booting(
     trigger: On<Insert, Booting>,
     mut commands: Commands,
     configs: Query<&VmConfig>,
+    identities: Query<&super::VmIdentity>,
 ) {
     let entity = trigger.event_target();
     let Ok(config) = configs.get(entity) else {
         return;
     };
+    let Ok(identity) = identities.get(entity) else {
+        return;
+    };
     let sc = config.0.clone();
+    let vm = identity.clone();
     tracing::debug!(entity = ?entity, vm = sc.display_name(), "entered Booting");
 
     commands.entity(entity).spawn_task(move |cmd: Tq| async move {
@@ -116,19 +116,13 @@ pub fn on_booting(
                 tracing::debug!(entity = ?entity, vsock_cid = cid, "vm boot completed");
                 cmd.send(move |world: &mut World| {
                     world.entity_mut(entity).insert(super::agent::VsockCid(cid));
-                    world.entity_mut(entity).insert(Done::Success);
-                })
-                .wake();
+                });
+                super::update_vm_phase(&cmd, vm, true, None);
             }
             Err(e) => {
                 let msg = e.to_string();
                 tracing::debug!(entity = ?entity, error = %msg, "vm boot failed");
-                cmd.send(move |world: &mut World| {
-                    world
-                        .entity_mut(entity)
-                        .insert((super::terminal::VmError(msg), Done::Failure));
-                })
-                .wake();
+                super::update_vm_phase(&cmd, vm, false, Some(msg));
             }
         }
     });
