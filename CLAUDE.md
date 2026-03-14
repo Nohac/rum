@@ -53,6 +53,28 @@ No external tools needed for cloud-init ISO generation (pure Rust `iso9660` modu
 
 Rust 2024 edition. Code is split into focused modules — avoid monolithic files.
 
+### Module Structure Preferences
+
+- Prefer **domain co-location** over **functional co-location**.
+- `mod.rs` files should be **exports/re-exports only**. Do not put functionality in `mod.rs`.
+- Avoid generic bucket files like `types.rs`, `helpers.rs`, `common.rs`, `workers.rs`, or similarly broad names unless the contents are truly one cohesive model.
+- Prefer the **minimum file count that preserves clear ownership**. Do not split a domain into many tiny files unless those parts have independent reasons to change.
+- If a small state type is only used by one workflow slice, co-locate it with the behavior that owns it instead of creating a separate file just because it is "a type".
+
+### Domain Ownership Rules
+
+- `src/vm/` owns VM lifecycle operations and libvirt-facing VM behavior.
+- `src/agent/` owns guest-agent transport and RPC behavior.
+- `src/lifecycle/` owns orchestration only: ECS workflow state, state-machine wiring, and phase observers.
+- `src/lifecycle/` must not become a second home for core `vm/` or `agent/` logic.
+- If two directories would both claim the same noun, one of them is probably an orchestration layer and should be renamed or narrowed.
+
+### Naming Guidance
+
+- Prefer names that reflect the owning domain or workflow slice.
+- For orchestration-owned files and types, prefer names like `machine`, `prepare`, `provision`, `stop`, `terminal`, `context`, `queue`, `prepared`, `connected`, or `failure`.
+- Avoid names that read like "leftovers for this module".
+
 ### Module Map
 
 - **`src/config.rs`** — TOML config parsing/validation via facet. Structs: `Config`, `ImageConfig`, `ResourcesConfig`, `NetworkConfig`, `ProvisionConfig`, `AdvancedConfig`. Note: facet requires both `#[facet(default)]` on the struct AND a manual `impl Default` for structs with non-zero defaults.

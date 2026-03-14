@@ -55,6 +55,7 @@ pub struct SharedReplicationPlugin;
 impl Plugin for SharedReplicationPlugin {
     fn build(&self, app: &mut App) {
         app.replicate::<VmPhase>();
+        VmPhase::replicate_markers(app);
         app.replicate::<crate::render::StepProgress>();
         app.replicate::<crate::lifecycle::VmError>();
         app.replicate::<DaemonSnapshot>();
@@ -191,6 +192,10 @@ fn spawn_server_listener(commands: &mut Commands, socket_path: std::path::PathBu
 
 // ── Client plugin ────────────────────────────────────────────────
 
+fn on_ready(_trigger: On<Insert, vm_phase::Running>, mut exit: ResMut<AppExit>) {
+    exit.0 = true;
+}
+
 fn on_server_exit(_trigger: On<ServerExitNotice>, mut exit: ResMut<AppExit>) {
     exit.0 = true;
 }
@@ -218,6 +223,7 @@ fn configure_client_runtime(app: &mut App) {
     app.add_plugins(SharedReplicationPlugin);
     app.add_plugins(ecsdk_replicon::ClientTransportPlugin);
 
+    app.add_observer(on_ready);
     app.add_observer(on_server_exit);
     app.add_systems(Update, detect_disconnect);
 }

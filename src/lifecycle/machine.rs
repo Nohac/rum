@@ -42,7 +42,6 @@ impl Plugin for LifecyclePlugin {
         app.add_observer(super::prepare::on_downloading_image);
         app.add_observer(super::prepare::on_preparing);
         app.add_observer(super::prepare::on_booting);
-        // app.add_observer(super::agent::on_state_change);
         app.add_observer(super::agent::on_connecting_agent);
         app.add_observer(super::provision::on_provisioning);
         app.add_observer(super::agent::on_starting_services);
@@ -165,7 +164,10 @@ mod tests {
         app.world_mut().entity_mut(entity).insert(Done::Success);
         app.update();
         assert!(app.world().get::<Destroyed>(entity).is_some());
-        assert_eq!(app.world().get::<VmPhase>(entity), Some(&VmPhase::Destroyed));
+        assert_eq!(
+            app.world().get::<VmPhase>(entity),
+            Some(&VmPhase::Destroyed)
+        );
     }
 
     #[test]
@@ -180,7 +182,11 @@ mod tests {
     #[test]
     fn reattach_shutdown_before_running_destroys() {
         let mut app = test_app();
-        let entity = spawn_vm(&mut app, super::super::reattach::build_sm(), StartingServices);
+        let entity = spawn_vm(
+            &mut app,
+            super::super::reattach::build_sm(),
+            StartingServices,
+        );
         app.world_mut().resource_mut::<ShutdownRequested>().0 = true;
         app.update();
         assert!(app.world().get::<Destroying>(entity).is_some());
@@ -189,7 +195,11 @@ mod tests {
     #[test]
     fn reprovision_shutdown_before_running_destroys() {
         let mut app = test_app();
-        let entity = spawn_vm(&mut app, super::super::reprovision::build_sm(), Provisioning);
+        let entity = spawn_vm(
+            &mut app,
+            super::super::reprovision::build_sm(),
+            Provisioning,
+        );
         app.world_mut().resource_mut::<ShutdownRequested>().0 = true;
         app.update();
         assert!(app.world().get::<Destroying>(entity).is_some());
