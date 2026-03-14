@@ -3,11 +3,14 @@ use bevy::ecs::prelude::*;
 use bevy::state::prelude::*;
 use bevy_replicon::prelude::*;
 use ecsdk_core::AppExit;
+use ecsdk_core::MessageQueue;
 use ecsdk_replicon::{AcceptClientCmd, ConnectClientCmd};
 use ecsdk_tasks::SpawnCmdTask;
 use serde::{Deserialize, Serialize};
 
-use crate::phase::{ShutdownRequested, VmPhase};
+use crate::lifecycle::RumMessage;
+use crate::phase::VmPhase;
+use crate::phase::vm_phase;
 
 // ── Protocol events ──────────────────────────────────────────────
 
@@ -67,16 +70,16 @@ impl Plugin for SharedReplicationPlugin {
 
 fn handle_shutdown_request(
     _trigger: On<FromClient<ShutdownRequest>>,
-    mut shutdown: ResMut<ShutdownRequested>,
+    queue: Res<MessageQueue<RumMessage>>,
 ) {
-    shutdown.0 = true;
+    queue.send(RumMessage::RequestShutdown);
 }
 
 fn handle_force_stop_request(
     _trigger: On<FromClient<ForceStopRequest>>,
-    mut exit: ResMut<AppExit>,
+    queue: Res<MessageQueue<RumMessage>>,
 ) {
-    exit.0 = true;
+    queue.send(RumMessage::RequestForceStop);
 }
 
 fn handle_status_request(

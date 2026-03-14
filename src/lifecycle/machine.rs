@@ -156,6 +156,46 @@ mod tests {
     }
 
     #[test]
+    fn first_boot_shutdown_before_running_destroys() {
+        let mut app = test_app();
+        let entity = spawn_vm(&mut app, super::super::first_boot::build_sm(), Virgin);
+        app.world_mut().resource_mut::<ShutdownRequested>().0 = true;
+        app.update();
+        assert!(app.world().get::<Destroying>(entity).is_some());
+        app.world_mut().entity_mut(entity).insert(Done::Success);
+        app.update();
+        assert!(app.world().get::<Destroyed>(entity).is_some());
+        assert_eq!(app.world().get::<VmPhase>(entity), Some(&VmPhase::Destroyed));
+    }
+
+    #[test]
+    fn reboot_shutdown_before_running_destroys() {
+        let mut app = test_app();
+        let entity = spawn_vm(&mut app, super::super::reboot::build_sm(), Booting);
+        app.world_mut().resource_mut::<ShutdownRequested>().0 = true;
+        app.update();
+        assert!(app.world().get::<Destroying>(entity).is_some());
+    }
+
+    #[test]
+    fn reattach_shutdown_before_running_destroys() {
+        let mut app = test_app();
+        let entity = spawn_vm(&mut app, super::super::reattach::build_sm(), StartingServices);
+        app.world_mut().resource_mut::<ShutdownRequested>().0 = true;
+        app.update();
+        assert!(app.world().get::<Destroying>(entity).is_some());
+    }
+
+    #[test]
+    fn reprovision_shutdown_before_running_destroys() {
+        let mut app = test_app();
+        let entity = spawn_vm(&mut app, super::super::reprovision::build_sm(), Provisioning);
+        app.world_mut().resource_mut::<ShutdownRequested>().0 = true;
+        app.update();
+        assert!(app.world().get::<Destroying>(entity).is_some());
+    }
+
+    #[test]
     fn reboot_happy_path() {
         let mut app = test_app();
         let entity = spawn_vm(&mut app, super::super::reboot::build_sm(), Booting);
