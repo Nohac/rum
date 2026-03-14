@@ -4,11 +4,9 @@ use ecsdk_core::CmdQueue;
 
 use crate::cli::OutputFormat;
 use crate::config::SystemConfig;
-use crate::daemon;
 use crate::error::RumError;
-use crate::lifecycle::RumMessage;
 use crate::render::RumRenderPlugin;
-use crate::replicon::{RumClientPlugin, ShutdownRequest};
+use crate::replicon::ShutdownRequest;
 
 /// Run `rum up` — spawn daemon if needed, then connect as replicon client.
 pub async fn run_up(
@@ -22,12 +20,8 @@ pub async fn run_up(
         crate::vm::destroy::destroy_vm(sys_config).await.ok();
     }
 
-    let socket_path = crate::paths::socket_path(&sys_config.id, sys_config.name.as_deref());
-
     // Spawn daemon if not already running
-    if !daemon_is_running(&socket_path).await {
-        daemon::spawn_background(sys_config).await?;
-    }
+    crate::app::ensure_daemon(sys_config).await?;
 
     // --detach: daemon is running, we're done
     if detach {
@@ -36,10 +30,7 @@ pub async fn run_up(
     }
 
     // Run client ECS app with replicon + render
-    let (mut app, rx) = ecsdk_app::setup::<RumMessage>();
-    app.add_plugins(RumClientPlugin {
-        socket_path: socket_path.clone(),
-    });
+    let (mut app, rx) = crate::app::ensure_daemon_and_connect(sys_config).await?;
     app.add_plugins(RumRenderPlugin(output_format.clone()));
 
     // Ctrl+C: send ShutdownRequest client event to daemon
@@ -67,9 +58,4 @@ pub async fn run_up(
 
     ecsdk_app::run_async(&mut app, rx).await;
     Ok(())
-}
-
-/// Check if a daemon is already listening on the socket.
-async fn daemon_is_running(socket_path: &std::path::Path) -> bool {
-    tokio::net::UnixStream::connect(socket_path).await.is_ok()
 }

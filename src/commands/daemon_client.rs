@@ -1,45 +1,18 @@
 use bevy::app::prelude::*;
 use bevy::ecs::prelude::*;
 use bevy_replicon::prelude::ClientTriggerExt;
-use ecsdk_app::Receivers;
 
 use crate::cli::OutputFormat;
 use crate::config::SystemConfig;
 use crate::daemon::StatusInfo;
 use crate::error::RumError;
-use crate::lifecycle::{RumMessage, VmError};
+use crate::lifecycle::VmError;
 use crate::phase::VmPhase;
 use crate::render::RumRenderPlugin;
 use crate::replicon::{
-    connect_client, DaemonControl, DaemonSnapshot, ForceStopRequest, RumClientCorePlugin,
-    ShutdownRequest, SshConfigRequest, StatusRequest,
+    DaemonControl, DaemonSnapshot, ForceStopRequest, ShutdownRequest, SshConfigRequest,
+    StatusRequest,
 };
-
-async fn setup_client_app(sys_config: &SystemConfig) -> Result<(App, Receivers<RumMessage>), RumError> {
-    if !crate::daemon::is_daemon_running(sys_config) {
-        return Err(RumError::Daemon {
-            message: format!(
-                "no daemon running for '{}'. Run `rum up` first.",
-                sys_config.display_name()
-            ),
-        });
-    }
-
-    let socket_path = crate::paths::socket_path(&sys_config.id, sys_config.name.as_deref());
-    let stream = tokio::net::UnixStream::connect(&socket_path)
-        .await
-        .map_err(|e| RumError::Daemon {
-            message: format!(
-                "failed to connect to daemon for '{}': {e}",
-                sys_config.display_name()
-            ),
-        })?;
-
-    let (mut app, rx) = ecsdk_app::setup::<RumMessage>();
-    app.add_plugins(RumClientCorePlugin);
-    connect_client(app.world_mut(), stream);
-    Ok((app, rx))
-}
 
 fn daemon_snapshot(app: &mut App) -> Option<DaemonSnapshot> {
     let world = app.world_mut();
@@ -165,7 +138,7 @@ fn exit_on_terminal_phase(
 }
 
 pub async fn request_status(sys_config: &SystemConfig) -> Result<StatusInfo, RumError> {
-    let (mut app, rx) = setup_client_app(sys_config).await?;
+    let (mut app, rx) = crate::app::connect_existing_daemon(sys_config).await?;
     app.init_resource::<StatusRequestState>();
     app.add_systems(Update, (request_status_snapshot, exit_on_status_snapshot).chain());
     ecsdk_app::run_async(&mut app, rx).await;
@@ -186,7 +159,7 @@ pub async fn request_status(sys_config: &SystemConfig) -> Result<StatusInfo, Rum
 }
 
 pub async fn request_ssh_config(sys_config: &SystemConfig) -> Result<String, RumError> {
-    let (mut app, rx) = setup_client_app(sys_config).await?;
+    let (mut app, rx) = crate::app::connect_existing_daemon(sys_config).await?;
     app.init_resource::<SshConfigRequestState>();
     app.add_systems(
         Update,
@@ -216,7 +189,7 @@ pub async fn request_shutdown(
     sys_config: &SystemConfig,
     output_format: &OutputFormat,
 ) -> Result<(), RumError> {
-    let (mut app, rx) = setup_client_app(sys_config).await?;
+    let (mut app, rx) = crate::app::connect_existing_daemon(sys_config).await?;
     app.add_plugins(RumRenderPlugin(output_format.clone()));
     app.add_systems(Startup, send_shutdown_request);
     app.add_systems(Update, exit_on_terminal_phase);
@@ -230,7 +203,7 @@ pub async fn request_shutdown(
 }
 
 pub async fn request_force_stop(sys_config: &SystemConfig) -> Result<(), RumError> {
-    let (mut app, rx) = setup_client_app(sys_config).await?;
+    let (mut app, rx) = crate::app::connect_existing_daemon(sys_config).await?;
     app.add_systems(Startup, send_force_stop_request);
     ecsdk_app::run_async(&mut app, rx).await;
     Ok(())
