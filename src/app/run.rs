@@ -60,18 +60,18 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
             commands::client::run_up(&sys_config, reset, detach, &output_format).await?
         }
         Command::Down => {
-            commands::daemon_client::request_shutdown(&sys_config, &output_format).await?;
+            commands::control::request_shutdown(&sys_config, &output_format).await?;
         }
         Command::Destroy => {
             if crate::daemon::is_daemon_running(&sys_config) {
-                let _ = commands::daemon_client::request_force_stop(&sys_config).await;
+                let _ = commands::control::request_force_stop(&sys_config).await;
             }
             commands::destroy::destroy_cleanup(&sys_config).await?;
         }
         Command::Status => {
             let vm_name = sys_config.display_name();
             let info = match crate::daemon::is_daemon_running(&sys_config) {
-                true => commands::daemon_client::request_status(&sys_config).await?,
+                true => commands::control::request_status(&sys_config).await?,
                 false => commands::status::offline_status(&sys_config),
             };
 
@@ -98,7 +98,7 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
         }
         Command::Ssh { args } => backend.ssh(&sys_config, &args).await?,
         Command::SshConfig => {
-            let config_text = commands::daemon_client::request_ssh_config(&sys_config).await?;
+            let config_text = commands::control::request_ssh_config(&sys_config).await?;
             print!("{config_text}");
         }
         Command::Log { failed, all, rum } => {
