@@ -5,35 +5,35 @@ use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use tokio::io::AsyncWriteExt;
 
-use crate::error::RumError;
+use crate::error::Error;
 
 /// Download a response body to a file, updating the progress bar as chunks arrive.
 async fn download_to_file(
     path: &Path,
     response: reqwest::Response,
     pb: &ProgressBar,
-) -> Result<(), RumError> {
+) -> Result<(), Error> {
     let mut file = tokio::fs::File::create(path)
         .await
-        .map_err(|e| RumError::Io {
+        .map_err(|e| Error::Io {
             context: format!("creating temp file {}", path.display()),
             source: e,
         })?;
 
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| RumError::ImageDownload {
+        let chunk = chunk.map_err(|e| Error::ImageDownload {
             message: "error reading response body".into(),
             source: Box::new(e),
         })?;
-        file.write_all(&chunk).await.map_err(|e| RumError::Io {
+        file.write_all(&chunk).await.map_err(|e| Error::Io {
             context: "writing image data".into(),
             source: e,
         })?;
         pb.inc(chunk.len() as u64);
     }
 
-    file.flush().await.map_err(|e| RumError::Io {
+    file.flush().await.map_err(|e| Error::Io {
         context: "flushing image file".into(),
         source: e,
     })?;
@@ -52,11 +52,11 @@ pub fn is_cached(base: &str, cache_dir: &Path) -> bool {
 
 /// Ensure the base image is available locally, downloading if needed.
 /// Returns the path to the cached image file.
-pub async fn ensure_base_image(base: &str, cache_dir: &Path) -> Result<PathBuf, RumError> {
+pub async fn ensure_base_image(base: &str, cache_dir: &Path) -> Result<PathBuf, Error> {
     if !base.starts_with("http://") && !base.starts_with("https://") {
         let path = PathBuf::from(base);
         if !path.exists() {
-            return Err(RumError::Io {
+            return Err(Error::Io {
                 context: format!("base image not found: {}", path.display()),
                 source: std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"),
             });
@@ -68,7 +68,7 @@ pub async fn ensure_base_image(base: &str, cache_dir: &Path) -> Result<PathBuf, 
 
     tokio::fs::create_dir_all(cache_dir)
         .await
-        .map_err(|e| RumError::Io {
+        .map_err(|e| Error::Io {
             context: format!("creating cache dir {}", cache_dir.display()),
             source: e,
         })?;
@@ -83,13 +83,13 @@ pub async fn ensure_base_image(base: &str, cache_dir: &Path) -> Result<PathBuf, 
 
     let response = reqwest::get(base)
         .await
-        .map_err(|e| RumError::ImageDownload {
+        .map_err(|e| Error::ImageDownload {
             message: format!("request to {base} failed"),
             source: Box::new(e),
         })?;
 
     if !response.status().is_success() {
-        return Err(RumError::ImageDownload {
+        return Err(Error::ImageDownload {
             message: format!("HTTP {} from {base}", response.status()),
             source: format!("HTTP {}", response.status()).into(),
         });
@@ -118,7 +118,7 @@ pub async fn ensure_base_image(base: &str, cache_dir: &Path) -> Result<PathBuf, 
 
     tokio::fs::rename(&tmp_path, &dest)
         .await
-        .map_err(|e| RumError::Io {
+        .map_err(|e| Error::Io {
             context: format!("renaming {} to {}", tmp_path.display(), dest.display()),
             source: e,
         })?;
@@ -130,14 +130,14 @@ pub async fn ensure_base_image(base: &str, cache_dir: &Path) -> Result<PathBuf, 
 }
 
 /// List all cached images with filename, size, and modification time.
-pub fn list_cached(cache_dir: &Path) -> Result<(), RumError> {
+pub fn list_cached(cache_dir: &Path) -> Result<(), Error> {
     if !cache_dir.exists() {
         println!("No cached images.");
         return Ok(());
     }
 
     let mut entries: Vec<_> = std::fs::read_dir(cache_dir)
-        .map_err(|e| RumError::Io {
+        .map_err(|e| Error::Io {
             context: format!("reading cache directory {}", cache_dir.display()),
             source: e,
         })?
@@ -154,7 +154,7 @@ pub fn list_cached(cache_dir: &Path) -> Result<(), RumError> {
 
     let mut total_size: u64 = 0;
     for entry in &entries {
-        let meta = entry.metadata().map_err(|e| RumError::Io {
+        let meta = entry.metadata().map_err(|e| Error::Io {
             context: format!("reading metadata for {}", entry.path().display()),
             source: e,
         })?;
@@ -183,10 +183,10 @@ pub fn list_cached(cache_dir: &Path) -> Result<(), RumError> {
 }
 
 /// Delete a specific cached image by filename.
-pub fn delete_cached(cache_dir: &Path, name: &str) -> Result<(), RumError> {
+pub fn delete_cached(cache_dir: &Path, name: &str) -> Result<(), Error> {
     let path = cache_dir.join(name);
     if !path.exists() {
-        return Err(RumError::Io {
+        return Err(Error::Io {
             context: format!(
                 "cached image '{}' not found in {}",
                 name,
@@ -195,11 +195,11 @@ pub fn delete_cached(cache_dir: &Path, name: &str) -> Result<(), RumError> {
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"),
         });
     }
-    let meta = std::fs::metadata(&path).map_err(|e| RumError::Io {
+    let meta = std::fs::metadata(&path).map_err(|e| Error::Io {
         context: format!("reading metadata for {}", path.display()),
         source: e,
     })?;
-    std::fs::remove_file(&path).map_err(|e| RumError::Io {
+    std::fs::remove_file(&path).map_err(|e| Error::Io {
         context: format!("deleting {}", path.display()),
         source: e,
     })?;
@@ -208,14 +208,14 @@ pub fn delete_cached(cache_dir: &Path, name: &str) -> Result<(), RumError> {
 }
 
 /// Delete all cached images.
-pub fn clear_cache(cache_dir: &Path) -> Result<(), RumError> {
+pub fn clear_cache(cache_dir: &Path) -> Result<(), Error> {
     if !cache_dir.exists() {
         println!("No cached images.");
         return Ok(());
     }
 
     let entries: Vec<_> = std::fs::read_dir(cache_dir)
-        .map_err(|e| RumError::Io {
+        .map_err(|e| Error::Io {
             context: format!("reading cache directory {}", cache_dir.display()),
             source: e,
         })?
@@ -235,7 +235,7 @@ pub fn clear_cache(cache_dir: &Path) -> Result<(), RumError> {
         .sum();
 
     for entry in &entries {
-        std::fs::remove_file(entry.path()).map_err(|e| RumError::Io {
+        std::fs::remove_file(entry.path()).map_err(|e| Error::Io {
             context: format!("deleting {}", entry.path().display()),
             source: e,
         })?;

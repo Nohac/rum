@@ -1,23 +1,23 @@
 use virt::domain::Domain;
 
 use crate::config::SystemConfig;
-use crate::error::RumError;
+use crate::error::Error;
 use crate::paths;
 use crate::vm::libvirt::{connect, is_running};
 
-pub async fn ssh(sys_config: &SystemConfig, args: &[String]) -> Result<(), RumError> {
+pub async fn ssh(sys_config: &SystemConfig, args: &[String]) -> Result<(), Error> {
     let vm_name = sys_config.display_name();
     let id = &sys_config.id;
     let name_opt = sys_config.name.as_deref();
     let conn = connect(sys_config)?;
 
-    let dom = Domain::lookup_by_name(&conn, vm_name).map_err(|_| RumError::SshNotReady {
+    let dom = Domain::lookup_by_name(&conn, vm_name).map_err(|_| Error::SshNotReady {
         name: vm_name.to_string(),
         reason: "VM is not defined".into(),
     })?;
 
     if !is_running(&dom) {
-        return Err(RumError::SshNotReady {
+        return Err(Error::SshNotReady {
             name: vm_name.to_string(),
             reason: "VM is not running".into(),
         });
@@ -27,7 +27,7 @@ pub async fn ssh(sys_config: &SystemConfig, args: &[String]) -> Result<(), RumEr
     let ssh_key_path = paths::ssh_key_path(id, name_opt);
 
     if !ssh_key_path.exists() {
-        return Err(RumError::SshNotReady {
+        return Err(Error::SshNotReady {
             name: vm_name.to_string(),
             reason: "SSH key not found (run `rum up` first)".into(),
         });
@@ -59,7 +59,7 @@ pub async fn ssh(sys_config: &SystemConfig, args: &[String]) -> Result<(), RumEr
     command.args(args);
 
     let err = command.exec();
-    Err(RumError::Io {
+    Err(Error::Io {
         context: format!("exec {}", ssh_config.command),
         source: err,
     })
@@ -69,32 +69,32 @@ pub async fn ssh(sys_config: &SystemConfig, args: &[String]) -> Result<(), RumEr
 ///
 /// Connects to libvirt, verifies the domain exists and is running,
 /// then parses the auto-assigned CID from the live domain XML.
-pub fn get_vsock_cid(sys_config: &SystemConfig) -> Result<u32, RumError> {
+pub fn get_vsock_cid(sys_config: &SystemConfig) -> Result<u32, Error> {
     let vm_name = sys_config.display_name();
     let conn = crate::vm::libvirt::connect(sys_config)?;
 
-    let dom = Domain::lookup_by_name(&conn, vm_name).map_err(|_| RumError::DomainNotFound {
+    let dom = Domain::lookup_by_name(&conn, vm_name).map_err(|_| Error::DomainNotFound {
         name: vm_name.to_string(),
     })?;
 
     if !crate::vm::libvirt::is_running(&dom) {
-        return Err(RumError::ExecNotReady {
+        return Err(Error::ExecNotReady {
             name: vm_name.to_string(),
             reason: "VM is not running".into(),
         });
     }
 
-    crate::vm::libvirt::parse_vsock_cid(&dom).ok_or_else(|| RumError::ExecNotReady {
+    crate::vm::libvirt::parse_vsock_cid(&dom).ok_or_else(|| Error::ExecNotReady {
         name: vm_name.to_string(),
         reason: "could not determine vsock CID from domain XML".into(),
     })
 }
 
-fn get_vm_ip(dom: &Domain, sys_config: &SystemConfig) -> Result<String, RumError> {
+fn get_vm_ip(dom: &Domain, sys_config: &SystemConfig) -> Result<String, Error> {
     let vm_name = sys_config.display_name();
     let ifaces = dom
         .interface_addresses(virt::sys::VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE, 0)
-        .map_err(|_| RumError::SshNotReady {
+        .map_err(|_| Error::SshNotReady {
             name: vm_name.to_string(),
             reason: "could not query network interfaces".into(),
         })?;
@@ -147,7 +147,7 @@ fn get_vm_ip(dom: &Domain, sys_config: &SystemConfig) -> Result<String, RumError
         }
     }
 
-    Err(RumError::SshNotReady {
+    Err(Error::SshNotReady {
         name: vm_name.to_string(),
         reason: "no IP address found (VM may still be booting)".into(),
     })

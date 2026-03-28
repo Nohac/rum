@@ -1,26 +1,26 @@
 use std::path::Path;
 
-use crate::error::RumError;
+use crate::error::Error;
 
 use super::identity::{config_id, derive_name};
 use super::runtime::SystemConfig;
 use super::schema::Config;
 use super::validate::{validate_config, validate_name};
 
-pub fn load_config(path: &Path) -> Result<SystemConfig, RumError> {
-    let contents = std::fs::read_to_string(path).map_err(|source| RumError::ConfigLoad {
+pub fn load_config(path: &Path) -> Result<SystemConfig, Error> {
+    let contents = std::fs::read_to_string(path).map_err(|source| Error::ConfigLoad {
         path: path.display().to_string(),
         source,
     })?;
 
-    let config: Config = facet_toml::from_str(&contents).map_err(|e| RumError::ConfigParse {
+    let config: Config = facet_toml::from_str(&contents).map_err(|e| Error::ConfigParse {
         path: path.display().to_string(),
         message: e.to_string(),
     })?;
 
     validate_config(&config)?;
 
-    let canonical = path.canonicalize().map_err(|source| RumError::ConfigLoad {
+    let canonical = path.canonicalize().map_err(|source| Error::ConfigLoad {
         path: path.display().to_string(),
         source,
     })?;

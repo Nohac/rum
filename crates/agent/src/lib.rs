@@ -94,7 +94,7 @@ pub struct ReadFileResult {
 }
 
 #[roam::service]
-pub trait RumAgent {
+pub trait Agent {
     async fn ping(&self) -> Result<ReadyResponse, String>;
     async fn subscribe_logs(&self, output: Tx<LogEvent>);
     async fn exec(&self, command: String, output: Tx<LogEvent>) -> ExecResult;

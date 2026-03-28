@@ -4,19 +4,19 @@ use tokio::task::JoinHandle;
 use tokio_vsock::{VsockAddr, VsockStream};
 
 use crate::config::PortForward;
-use crate::error::RumError;
+use crate::error::Error;
 
 const FORWARD_PORT: u32 = 2223;
 
 pub async fn start_port_forwards(
     cid: u32,
     ports: &[PortForward],
-) -> Result<Vec<JoinHandle<()>>, RumError> {
+) -> Result<Vec<JoinHandle<()>>, Error> {
     let mut handles = Vec::new();
 
     for pf in ports {
         let bind_addr = format!("{}:{}", pf.bind_addr(), pf.host);
-        let listener = TcpListener::bind(&bind_addr).await.map_err(|e| RumError::Io {
+        let listener = TcpListener::bind(&bind_addr).await.map_err(|e| Error::Io {
             context: format!("binding port forward on {bind_addr}"),
             source: e,
         })?;

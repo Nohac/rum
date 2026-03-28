@@ -3,7 +3,7 @@ use virt::domain::Domain;
 use virt::error as virt_error;
 
 use crate::config::SystemConfig;
-use crate::error::RumError;
+use crate::error::Error;
 
 pub struct ConnGuard(pub Connect);
 
@@ -21,12 +21,12 @@ impl Drop for ConnGuard {
     }
 }
 
-pub fn connect(sys_config: &SystemConfig) -> Result<ConnGuard, RumError> {
+pub fn connect(sys_config: &SystemConfig) -> Result<ConnGuard, Error> {
     virt_error::clear_error_callback();
 
     Connect::open(Some(sys_config.libvirt_uri()))
         .map(ConnGuard)
-        .map_err(|e| RumError::Libvirt {
+        .map_err(|e| Error::Libvirt {
             message: format!("failed to connect to libvirt: {e}"),
             hint: format!(
                 "ensure libvirtd is running and you have access to {}",
@@ -35,8 +35,8 @@ pub fn connect(sys_config: &SystemConfig) -> Result<ConnGuard, RumError> {
         })
 }
 
-pub fn define_domain(conn: &Connect, xml: &str) -> Result<Domain, RumError> {
-    Domain::define_xml(conn, xml).map_err(|e| RumError::Libvirt {
+pub fn define_domain(conn: &Connect, xml: &str) -> Result<Domain, Error> {
+    Domain::define_xml(conn, xml).map_err(|e| Error::Libvirt {
         message: format!("failed to define domain: {e}"),
         hint: "check the generated domain XML for errors".into(),
     })
@@ -46,11 +46,11 @@ pub fn is_running(dom: &Domain) -> bool {
     dom.is_active().unwrap_or(false)
 }
 
-pub async fn shutdown_domain(dom: &Domain) -> Result<(), RumError> {
+pub async fn shutdown_domain(dom: &Domain) -> Result<(), Error> {
     if !is_running(dom) {
         return Ok(());
     }
-    dom.shutdown().map_err(|e| RumError::Libvirt {
+    dom.shutdown().map_err(|e| Error::Libvirt {
         message: format!("shutdown failed: {e}"),
         hint: "VM may not support ACPI shutdown".into(),
     })?;
@@ -62,7 +62,7 @@ pub async fn shutdown_domain(dom: &Domain) -> Result<(), RumError> {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
-    dom.destroy().map_err(|e| RumError::Libvirt {
+    dom.destroy().map_err(|e| Error::Libvirt {
         message: format!("force stop failed: {e}"),
         hint: "check libvirt permissions".into(),
     })?;

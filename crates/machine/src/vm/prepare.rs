@@ -3,10 +3,10 @@ use std::path::Path;
 use virt::domain::Domain;
 
 use crate::config::SystemConfig;
-use crate::error::RumError;
+use crate::error::Error;
 use crate::{cloudinit, image, paths, qcow2};
 
-pub async fn prepare_vm(sys_config: &SystemConfig, base_image: &Path) -> Result<(), RumError> {
+pub async fn prepare_vm(sys_config: &SystemConfig, base_image: &Path) -> Result<(), Error> {
     let id = &sys_config.id;
     let name_opt = sys_config.name.as_deref();
     let vm_name = sys_config.display_name();
@@ -115,11 +115,11 @@ pub async fn prepare_vm(sys_config: &SystemConfig, base_image: &Path) -> Result<
                 &xml_path,
             ) {
                 if crate::vm::libvirt::is_running(&dom) {
-                    return Err(RumError::RequiresRestart {
+                    return Err(Error::RequiresRestart {
                         name: vm_name.to_string(),
                     });
                 }
-                dom.undefine().map_err(|e| RumError::Libvirt {
+                dom.undefine().map_err(|e| Error::Libvirt {
                     message: format!("failed to undefine domain: {e}"),
                     hint: "check libvirt permissions".into(),
                 })?;
@@ -135,7 +135,7 @@ pub async fn prepare_vm(sys_config: &SystemConfig, base_image: &Path) -> Result<
 
     tokio::fs::write(&xml_path, &xml)
         .await
-        .map_err(|e| RumError::Io {
+        .map_err(|e| Error::Io {
             context: format!("saving domain XML to {}", xml_path.display()),
             source: e,
         })?;
@@ -143,7 +143,7 @@ pub async fn prepare_vm(sys_config: &SystemConfig, base_image: &Path) -> Result<
     let cp_file = paths::config_path_file(id, name_opt);
     tokio::fs::write(&cp_file, sys_config.config_path.to_string_lossy().as_bytes())
         .await
-        .map_err(|e| RumError::Io {
+        .map_err(|e| Error::Io {
             context: format!("saving config path to {}", cp_file.display()),
             source: e,
         })?;
@@ -152,6 +152,6 @@ pub async fn prepare_vm(sys_config: &SystemConfig, base_image: &Path) -> Result<
     Ok(())
 }
 
-pub async fn ensure_image(base_url: &str, cache_dir: &Path) -> Result<std::path::PathBuf, RumError> {
+pub async fn ensure_image(base_url: &str, cache_dir: &Path) -> Result<std::path::PathBuf, Error> {
     image::ensure_base_image(base_url, cache_dir).await
 }

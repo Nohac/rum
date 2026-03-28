@@ -5,13 +5,13 @@ use std::time::SystemTime;
 pub use agent::{ProvisionScript, RunOn};
 use agent::ProvisionEvent;
 
-use crate::error::RumError;
+use crate::error::Error;
 
 pub async fn run_provision(
     agent: &super::AgentClient,
     scripts: Vec<agent::ProvisionScript>,
     logs_dir: &Path,
-) -> Result<(), RumError> {
+) -> Result<(), Error> {
     let script_names: Vec<String> = scripts.iter().map(|s| s.name.clone()).collect();
 
     let (tx, rx) = roam::channel::<ProvisionEvent>();
@@ -60,17 +60,17 @@ pub async fn run_provision(
 
     let result = task
         .await
-        .map_err(|e| RumError::Io {
+        .map_err(|e| Error::Io {
             context: format!("provision task panicked: {e}"),
             source: std::io::Error::other(e.to_string()),
         })?
-        .map_err(|e| RumError::Io {
+        .map_err(|e| Error::Io {
             context: format!("provision RPC failed: {e}"),
             source: std::io::Error::other(e.to_string()),
         })?;
 
     if failed || !result.success {
-        return Err(RumError::ProvisionFailed {
+        return Err(Error::ProvisionFailed {
             script: result.failed_script,
         });
     }

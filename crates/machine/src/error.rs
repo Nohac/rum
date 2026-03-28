@@ -2,7 +2,7 @@ use miette::Diagnostic;
 use thiserror::Error;
 
 #[derive(Debug, Error, Diagnostic)]
-pub enum RumError {
+pub enum Error {
     #[error("failed to load config from {path}")]
     ConfigLoad {
         path: String,

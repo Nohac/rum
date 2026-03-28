@@ -1,13 +1,13 @@
-use crate::error::RumError;
+use crate::error::Error;
 
 /// Parse a human-readable size string into bytes.
 ///
 /// Accepts formats like `"20G"`, `"512M"`, `"100K"`, `"1073741824"`.
 /// Uses binary units (1G = 1024³ = 1,073,741,824 bytes).
-pub fn parse_size(s: &str) -> Result<u64, RumError> {
+pub fn parse_size(s: &str) -> Result<u64, Error> {
     let s = s.trim();
     if s.is_empty() {
-        return Err(RumError::Validation {
+        return Err(Error::Validation {
             message: "size cannot be empty".into(),
         });
     }
@@ -18,7 +18,7 @@ pub fn parse_size(s: &str) -> Result<u64, RumError> {
         None => (s, String::new()),
     };
 
-    let num: u64 = num_str.parse().map_err(|_| RumError::Validation {
+    let num: u64 = num_str.parse().map_err(|_| Error::Validation {
         message: format!("invalid size number: '{num_str}'"),
     })?;
 
@@ -29,14 +29,14 @@ pub fn parse_size(s: &str) -> Result<u64, RumError> {
         "G" | "GB" => 1024 * 1024 * 1024,
         "T" | "TB" => 1024 * 1024 * 1024 * 1024,
         _ => {
-            return Err(RumError::Validation {
+            return Err(Error::Validation {
                 message: format!("unknown size suffix: '{suffix}' (use G, M, K, or T)"),
             });
         }
     };
 
     num.checked_mul(multiplier)
-        .ok_or_else(|| RumError::Validation {
+        .ok_or_else(|| Error::Validation {
             message: format!("size overflows: '{s}'"),
         })
 }

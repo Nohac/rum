@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::error::RumError;
+use crate::error::Error;
 use crate::paths;
 
 use super::identity::sanitize_tag;
@@ -90,7 +90,7 @@ impl SystemConfig {
     /// BTreeMap iteration is sorted by key, so device names are assigned
     /// in alphabetical order of drive names: first drive → vdb, second → vdc, etc.
     /// (vda is reserved for the root overlay disk.)
-    pub fn resolve_drives(&self) -> Result<Vec<ResolvedDrive>, RumError> {
+    pub fn resolve_drives(&self) -> Result<Vec<ResolvedDrive>, Error> {
         let mut resolved = Vec::new();
         for (i, (name, drive)) in self.config.drives.iter().enumerate() {
             let dev = format!("vd{}", (b'b' + i as u8) as char);
@@ -105,21 +105,21 @@ impl SystemConfig {
     }
 
     /// Resolve mount sources relative to the config file path.
-    pub fn resolve_mounts(&self) -> Result<Vec<ResolvedMount>, RumError> {
+    pub fn resolve_mounts(&self) -> Result<Vec<ResolvedMount>, Error> {
         let parent = self.config_path.parent().unwrap_or(Path::new("."));
         let parent = if parent.as_os_str().is_empty() {
             Path::new(".")
         } else {
             parent
         };
-        let config_dir = parent.canonicalize().map_err(|e| RumError::Io {
+        let config_dir = parent.canonicalize().map_err(|e| Error::Io {
             context: format!("canonicalizing config dir {}", parent.display()),
             source: e,
         })?;
 
         let default_count = self.config.mounts.iter().filter(|m| m.default).count();
         if default_count > 1 {
-            return Err(RumError::Validation {
+            return Err(Error::Validation {
                 message: "at most one mount may have default = true".into(),
             });
         }
@@ -135,11 +135,11 @@ impl SystemConfig {
                         .args(["rev-parse", "--show-toplevel"])
                         .current_dir(&config_dir)
                         .output()
-                        .map_err(|e| RumError::GitRepoDetection {
+                        .map_err(|e| Error::GitRepoDetection {
                             message: format!("failed to run git: {e}"),
                         })?;
                     if !output.status.success() {
-                        return Err(RumError::GitRepoDetection {
+                        return Err(Error::GitRepoDetection {
                             message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
                         });
                     }
@@ -156,7 +156,7 @@ impl SystemConfig {
             };
 
             if !source.is_dir() {
-                return Err(RumError::MountSourceNotFound {
+                return Err(Error::MountSourceNotFound {
                     path: source.display().to_string(),
                 });
             }
@@ -168,7 +168,7 @@ impl SystemConfig {
             };
 
             if !seen_tags.insert(tag.clone()) {
-                return Err(RumError::Validation {
+                return Err(Error::Validation {
                     message: format!("duplicate mount tag '{tag}'"),
                 });
             }
@@ -189,7 +189,7 @@ impl SystemConfig {
     ///
     /// Must be called after `resolve_drives()` — uses the resolved drives
     /// to look up device names (vdb, vdc, ...).
-    pub fn resolve_fs(&self, drives: &[ResolvedDrive]) -> Result<Vec<ResolvedFs>, RumError> {
+    pub fn resolve_fs(&self, drives: &[ResolvedDrive]) -> Result<Vec<ResolvedFs>, Error> {
         let drive_map: std::collections::HashMap<&str, &str> = drives
             .iter()
             .map(|d| (d.name.as_str(), d.dev.as_str()))
@@ -203,7 +203,7 @@ impl SystemConfig {
                         let mut devs = Vec::new();
                         for name in &entry.drives {
                             let dev = drive_map.get(name.as_str()).ok_or_else(|| {
-                                RumError::Validation {
+                                Error::Validation {
                                     message: format!(
                                         "fs entry references unknown drive '{name}'"
                                     ),
@@ -227,7 +227,7 @@ impl SystemConfig {
                         let mut devs = Vec::new();
                         for name in &entry.drives {
                             let dev = drive_map.get(name.as_str()).ok_or_else(|| {
-                                RumError::Validation {
+                                Error::Validation {
                                     message: format!(
                                         "fs entry references unknown drive '{name}'"
                                     ),
@@ -244,7 +244,7 @@ impl SystemConfig {
                     _ => {
                         let dev_name =
                             drive_map.get(entry.drive.as_str()).ok_or_else(|| {
-                                RumError::Validation {
+                                Error::Validation {
                                     message: format!(
                                         "fs entry references unknown drive '{}'",
                                         entry.drive

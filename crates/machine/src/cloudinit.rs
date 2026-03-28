@@ -4,7 +4,7 @@ use std::path::Path;
 use facet_value::{VArray, Value, value};
 
 use crate::config::{BtrfsFs, ResolvedFs, ResolvedMount, SimpleFs, ZfsFs};
-use crate::error::RumError;
+use crate::error::Error;
 use crate::iso9660::{self, IsoFile};
 
 /// Configuration for cloud-init seed ISO generation.
@@ -49,11 +49,11 @@ pub fn seed_hash(config: &SeedConfig) -> String {
 pub async fn generate_seed_iso(
     seed_path: &Path,
     config: &SeedConfig<'_>,
-) -> Result<(), RumError> {
+) -> Result<(), Error> {
     if let Some(parent) = seed_path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
-            .map_err(|e| RumError::Io {
+            .map_err(|e| Error::Io {
                 context: format!("creating directory {}", parent.display()),
                 source: e,
             })?;
@@ -93,7 +93,7 @@ pub async fn generate_seed_iso(
 
     tokio::fs::write(seed_path, &iso)
         .await
-        .map_err(|e| RumError::Io {
+        .map_err(|e| Error::Io {
             context: format!("writing seed ISO to {}", seed_path.display()),
             source: e,
         })?;

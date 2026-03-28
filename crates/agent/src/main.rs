@@ -14,7 +14,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use roam_stream::{HandshakeConfig, accept};
 use agent::{
     ExecResult, FileChunk, LogEvent, LogLevel, LogStream, ProvisionEvent, ProvisionResult,
-    ProvisionScript, ReadFileResult, RunOn, RumAgent, RumAgentDispatcher, WriteFileInfo,
+    ProvisionScript, ReadFileResult, RunOn, Agent, AgentDispatcher, WriteFileInfo,
     WriteFileResult,
 };
 
@@ -26,11 +26,11 @@ const SCRIPTS_DIR: &str = "/var/lib/rum/scripts";
 const SENTINEL_PATH: &str = "/var/lib/rum/.system-provisioned";
 
 #[derive(Clone)]
-struct RumAgentImpl {
+struct AgentService {
     log_tx: broadcast::Sender<LogEvent>,
 }
 
-impl RumAgent for RumAgentImpl {
+impl Agent for AgentService {
     async fn ping(&self, _cx: &roam::Context) -> Result<agent::ReadyResponse, String> {
         let hostname = std::fs::read_to_string("/etc/hostname")
             .unwrap_or_else(|_| "unknown".into())
@@ -493,7 +493,7 @@ async fn main() {
     let mut sigterm = signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
     let mut sigint = signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
 
-    let agent = RumAgentImpl { log_tx };
+    let agent = AgentService { log_tx };
 
     loop {
         tokio::select! {
@@ -501,7 +501,7 @@ async fn main() {
                 match result {
                     Ok((stream, addr)) => {
                         tracing::info!(?addr, "RPC connection");
-                        let dispatcher = RumAgentDispatcher::new(agent.clone());
+                        let dispatcher = AgentDispatcher::new(agent.clone());
                         tokio::spawn(async move {
                             match accept(stream, HandshakeConfig::default(), dispatcher).await {
                                 Ok((_handle, _incoming, driver)) => {

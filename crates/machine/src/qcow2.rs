@@ -60,7 +60,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use crate::error::RumError;
+use crate::error::Error;
 use crate::util::parse_size;
 
 /// Cluster size: 64 KB (2^16 bytes).  This is the standard default used by
@@ -93,11 +93,11 @@ const QCOW2_VERSION: u32 = 2;
 /// create_qcow2(Path::new("/tmp/disk.qcow2"), "20G")?;
 /// create_qcow2(Path::new("/tmp/disk.qcow2"), "512M")?;
 /// ```
-pub fn create_qcow2(path: &Path, size: &str) -> Result<(), RumError> {
+pub fn create_qcow2(path: &Path, size: &str) -> Result<(), Error> {
     let virtual_size = parse_size(size)?;
 
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| RumError::Io {
+        std::fs::create_dir_all(parent).map_err(|e| Error::Io {
             context: format!("creating directory {}", parent.display()),
             source: e,
         })?;
@@ -105,11 +105,11 @@ pub fn create_qcow2(path: &Path, size: &str) -> Result<(), RumError> {
 
     let image = build_qcow2(virtual_size);
 
-    let mut file = std::fs::File::create(path).map_err(|e| RumError::Io {
+    let mut file = std::fs::File::create(path).map_err(|e| Error::Io {
         context: format!("creating qcow2 image {}", path.display()),
         source: e,
     })?;
-    file.write_all(&image).map_err(|e| RumError::Io {
+    file.write_all(&image).map_err(|e| Error::Io {
         context: format!("writing qcow2 image {}", path.display()),
         source: e,
     })?;
@@ -131,15 +131,15 @@ pub fn create_qcow2_overlay(
     overlay_path: &Path,
     backing_file: &Path,
     virtual_size_override: Option<u64>,
-) -> Result<(), RumError> {
+) -> Result<(), Error> {
     if let Some(parent) = overlay_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| RumError::Io {
+        std::fs::create_dir_all(parent).map_err(|e| Error::Io {
             context: format!("creating directory {}", parent.display()),
             source: e,
         })?;
     }
 
-    let canonical = std::fs::canonicalize(backing_file).map_err(|e| RumError::Io {
+    let canonical = std::fs::canonicalize(backing_file).map_err(|e| Error::Io {
         context: format!("resolving backing file path {}", backing_file.display()),
         source: e,
     })?;
@@ -148,12 +148,12 @@ pub fn create_qcow2_overlay(
     // Read the backing file's virtual size from its QCOW2 header (bytes 24..32).
     let backing_header = {
         use std::io::Read;
-        let mut f = std::fs::File::open(&canonical).map_err(|e| RumError::Io {
+        let mut f = std::fs::File::open(&canonical).map_err(|e| Error::Io {
             context: format!("opening backing file {}", canonical.display()),
             source: e,
         })?;
         let mut buf = [0u8; 32];
-        f.read_exact(&mut buf).map_err(|e| RumError::Io {
+        f.read_exact(&mut buf).map_err(|e| Error::Io {
             context: format!("reading backing file header {}", canonical.display()),
             source: e,
         })?;
@@ -167,11 +167,11 @@ pub fn create_qcow2_overlay(
 
     let image = build_qcow2_with_backing(virtual_size, &backing_path_str);
 
-    let mut file = std::fs::File::create(overlay_path).map_err(|e| RumError::Io {
+    let mut file = std::fs::File::create(overlay_path).map_err(|e| Error::Io {
         context: format!("creating qcow2 overlay {}", overlay_path.display()),
         source: e,
     })?;
-    file.write_all(&image).map_err(|e| RumError::Io {
+    file.write_all(&image).map_err(|e| Error::Io {
         context: format!("writing qcow2 overlay {}", overlay_path.display()),
         source: e,
     })?;

@@ -1,9 +1,9 @@
 use agent::{LogEvent, LogStream};
 use tokio::io::AsyncWriteExt;
 
-use crate::error::RumError;
+use crate::error::Error;
 
-pub async fn run_exec(cid: u32, command: String) -> Result<i32, RumError> {
+pub async fn run_exec(cid: u32, command: String) -> Result<i32, Error> {
     let agent = super::wait_for_agent(cid).await?;
     let (tx, mut rx) = roam::channel::<LogEvent>();
     let exec_task = {
@@ -32,11 +32,11 @@ pub async fn run_exec(cid: u32, command: String) -> Result<i32, RumError> {
 
     let result = exec_task
         .await
-        .map_err(|e| RumError::Io {
+        .map_err(|e| Error::Io {
             context: format!("exec task panicked: {e}"),
             source: std::io::Error::other(e.to_string()),
         })?
-        .map_err(|e| RumError::Io {
+        .map_err(|e| Error::Io {
             context: format!("exec RPC failed: {e}"),
             source: std::io::Error::other(e.to_string()),
         })?;

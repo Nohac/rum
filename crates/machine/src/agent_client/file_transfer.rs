@@ -3,14 +3,14 @@ use std::path::{Path, PathBuf};
 use agent::{FileChunk, WriteFileInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 
-use crate::error::RumError;
+use crate::error::Error;
 
 pub enum CopyDirection {
     Upload { local: PathBuf, guest: String },
     Download { guest: String, local: PathBuf },
 }
 
-pub fn parse_copy_args(src: &str, dst: &str) -> Result<CopyDirection, RumError> {
+pub fn parse_copy_args(src: &str, dst: &str) -> Result<CopyDirection, Error> {
     let src_guest = src.starts_with(':');
     let dst_guest = dst.starts_with(':');
 
@@ -23,19 +23,19 @@ pub fn parse_copy_args(src: &str, dst: &str) -> Result<CopyDirection, RumError> 
             guest: src[1..].to_string(),
             local: PathBuf::from(dst),
         }),
-        (true, true) => Err(RumError::CopyFailed {
+        (true, true) => Err(Error::CopyFailed {
             message: "both paths have : prefix — guest-to-guest copy is not supported".into(),
         }),
-        (false, false) => Err(RumError::CopyFailed {
+        (false, false) => Err(Error::CopyFailed {
             message: "neither path has a : prefix — prefix the guest path with :".into(),
         }),
     }
 }
 
-pub async fn copy_to_guest(cid: u32, local: &Path, guest_path: &str) -> Result<u64, RumError> {
+pub async fn copy_to_guest(cid: u32, local: &Path, guest_path: &str) -> Result<u64, Error> {
     use std::os::unix::fs::PermissionsExt;
 
-    let metadata = tokio::fs::metadata(local).await.map_err(|e| RumError::CopyFailed {
+    let metadata = tokio::fs::metadata(local).await.map_err(|e| Error::CopyFailed {
         message: format!("{}: {e}", local.display()),
     })?;
     let mode = metadata.permissions().mode();
@@ -81,23 +81,23 @@ pub async fn copy_to_guest(cid: u32, local: &Path, guest_path: &str) -> Result<u
     let result = agent
         .write_file(info, rx)
         .await
-        .map_err(|e| RumError::CopyFailed {
+        .map_err(|e| Error::CopyFailed {
             message: format!("write_file RPC: {e}"),
         })?;
 
     send_task
         .await
-        .map_err(|e| RumError::CopyFailed {
+        .map_err(|e| Error::CopyFailed {
             message: format!("send task: {e}"),
         })?
-        .map_err(|e| RumError::CopyFailed {
+        .map_err(|e| Error::CopyFailed {
             message: format!("send: {e}"),
         })?;
 
     Ok(result.bytes_written)
 }
 
-pub async fn copy_from_guest(cid: u32, guest_path: &str, local: &Path) -> Result<u64, RumError> {
+pub async fn copy_from_guest(cid: u32, guest_path: &str, local: &Path) -> Result<u64, Error> {
     use std::os::unix::fs::PermissionsExt;
 
     let agent = super::wait_for_agent(cid).await?;
@@ -117,42 +117,42 @@ pub async fn copy_from_guest(cid: u32, guest_path: &str, local: &Path) -> Result
     };
 
     if let Some(parent) = final_path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| RumError::CopyFailed {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| Error::CopyFailed {
             message: format!("create dirs: {e}"),
         })?;
     }
 
     let file = tokio::fs::File::create(&final_path)
         .await
-        .map_err(|e| RumError::CopyFailed {
+        .map_err(|e| Error::CopyFailed {
             message: format!("{}: {e}", final_path.display()),
         })?;
     let mut writer = BufWriter::new(file);
     let mut bytes_written = 0_u64;
 
     while let Ok(Some(chunk)) = rx.recv().await {
-        writer.write_all(&chunk.data).await.map_err(|e| RumError::CopyFailed {
+        writer.write_all(&chunk.data).await.map_err(|e| Error::CopyFailed {
             message: format!("write: {e}"),
         })?;
         bytes_written += chunk.data.len() as u64;
     }
 
-    writer.flush().await.map_err(|e| RumError::CopyFailed {
+    writer.flush().await.map_err(|e| Error::CopyFailed {
         message: format!("flush: {e}"),
     })?;
 
     let result = read_task
         .await
-        .map_err(|e| RumError::CopyFailed {
+        .map_err(|e| Error::CopyFailed {
             message: format!("read task: {e}"),
         })?
-        .map_err(|e| RumError::CopyFailed {
+        .map_err(|e| Error::CopyFailed {
             message: format!("read_file RPC: {e}"),
         })?;
 
     tokio::fs::set_permissions(&final_path, std::fs::Permissions::from_mode(result.mode))
         .await
-        .map_err(|e| RumError::CopyFailed {
+        .map_err(|e| Error::CopyFailed {
             message: format!("chmod: {e}"),
         })?;
 

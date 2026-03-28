@@ -4,10 +4,10 @@ use virt::error as virt_error;
 use virt::network::Network;
 
 use crate::config::SystemConfig;
-use crate::error::RumError;
+use crate::error::Error;
 use crate::paths;
 
-pub async fn destroy_vm(sys_config: &SystemConfig) -> Result<(), RumError> {
+pub async fn destroy_vm(sys_config: &SystemConfig) -> Result<(), Error> {
     let id = &sys_config.id;
     let name_opt = sys_config.name.as_deref();
     let vm_name = sys_config.display_name();
@@ -38,7 +38,7 @@ pub async fn destroy_vm(sys_config: &SystemConfig) -> Result<(), RumError> {
     if work.exists() {
         tokio::fs::remove_dir_all(&work)
             .await
-            .map_err(|e| RumError::Io {
+            .map_err(|e| Error::Io {
                 context: format!("removing {}", work.display()),
                 source: e,
             })?;
