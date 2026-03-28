@@ -67,6 +67,7 @@ pub fn generate_network_xml(name: &str, subnet: &str) -> String {
 ///
 /// If an IP hint is provided (e.g. "192.168.50.10"), uses its first 3 octets.
 /// Otherwise, generates `192.168.<hash>` from the network name.
+/// TODO: Use OS specific lookup to find something free
 pub fn derive_subnet(name: &str, ip_hint: &str) -> String {
     if !ip_hint.is_empty()
         && let Some((prefix, _)) = ip_hint.rsplit_once('.')

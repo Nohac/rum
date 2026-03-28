@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use crate::domain_xml::*;
     use crate::{
         DomainConfig, InterfaceConfig, ResolvedDrive, ResolvedMount, network_xml,
+        generate_domain_xml, generate_mac, parse_vsock_cid,
     };
     use std::path::PathBuf;
 

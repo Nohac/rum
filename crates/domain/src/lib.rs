@@ -1,5 +1,7 @@
-pub mod domain_xml;
-pub mod network_xml;
+mod build;
+mod model;
+mod network_xml;
+mod support;
 
 use std::path::PathBuf;
 
@@ -34,5 +36,9 @@ pub struct DomainConfig {
     pub interfaces: Vec<InterfaceConfig>,
 }
 
-pub use domain_xml::{generate_domain_xml, generate_mac, parse_vsock_cid, xml_has_changed};
+#[cfg(test)]
+mod tests;
+
+pub use build::generate_domain_xml;
+pub use support::{generate_mac, parse_vsock_cid, xml_has_changed};
 pub use network_xml::{derive_subnet, generate_network_xml, prefixed_name};
