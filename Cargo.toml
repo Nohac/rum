@@ -1,35 +1,33 @@
 [workspace]
-members = ["rum-agent"]
+members = [
+    "crates/agent",
+    "crates/domain",
+    "crates/machine",
+]
 
-[package]
-name = "rum"
-version = "0.1.0"
-edition = "2024"
+resolver = "2"
 
-[dependencies]
-tokio = { version = "1", features = ["full"] }
+[workspace.dependencies]
+agent = { path = "crates/agent", artifact = "bin", lib = true, target = "x86_64-unknown-linux-musl" }
+domain = { path = "crates/domain" }
+
+dirs = "6"
 facet = "0.43"
 facet-toml = "0.43"
-miette = { version = "7", features = ["fancy"] }
-thiserror = "2"
-indicatif = "0.17"
-console = "0.15"
-tracing = "0.1"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
-dirs = "6"
-virt = "0.4"
-futures-util = "0.3"
 facet-value = "0.43"
-facet-yaml = "0.43"
 facet-xml = "0.43"
-ssh-key = { version = "0.6", features = ["ed25519", "rand_core", "getrandom"] }
-rand_core = { version = "0.6", features = ["getrandom"] }
-rum-agent = { path = "rum-agent", artifact = "bin", lib = true, target = "x86_64-unknown-linux-musl" }
-tokio-vsock = "0.7"
+facet-yaml = "0.43"
+futures-util = "0.3"
+indicatif = "0.17"
+miette = "7"
+rand_core = "0.6"
 roam = "0.6"
 roam-stream = "0.6"
-
-[dev-dependencies]
-assert_cmd = "2"
-predicates = "3"
+ssh-key = "0.6"
 tempfile = "3"
+thiserror = "2"
+tokio = "1"
+tokio-vsock = "0.7"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+virt = "0.4"

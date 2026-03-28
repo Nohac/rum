@@ -2,14 +2,14 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-pub use rum_agent::{ProvisionScript, RunOn};
-use rum_agent::ProvisionEvent;
+pub use agent::{ProvisionScript, RunOn};
+use agent::ProvisionEvent;
 
 use crate::error::RumError;
 
 pub async fn run_provision(
     agent: &super::AgentClient,
-    scripts: Vec<rum_agent::ProvisionScript>,
+    scripts: Vec<agent::ProvisionScript>,
     logs_dir: &Path,
 ) -> Result<(), RumError> {
     let script_names: Vec<String> = scripts.iter().map(|s| s.name.clone()).collect();

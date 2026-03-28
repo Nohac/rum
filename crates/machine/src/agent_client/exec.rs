@@ -1,4 +1,4 @@
-use rum_agent::{LogEvent, LogStream};
+use agent::{LogEvent, LogStream};
 use tokio::io::AsyncWriteExt;
 
 use crate::error::RumError;

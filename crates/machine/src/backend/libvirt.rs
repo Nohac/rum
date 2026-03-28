@@ -2,7 +2,7 @@ use virt::domain::Domain;
 
 use crate::config::SystemConfig;
 use crate::error::RumError;
-use crate::{domain_xml, paths};
+use crate::paths;
 use crate::vm::libvirt::{connect, is_running};
 
 pub struct LibvirtBackend;
@@ -119,7 +119,7 @@ fn get_vm_ip(dom: &Domain, sys_config: &SystemConfig) -> Result<String, RumError
             .interfaces
             .iter()
             .enumerate()
-            .map(|(i, _)| domain_xml::generate_mac(vm_name, i))
+            .map(|(i, _)| domain::generate_mac(vm_name, i))
             .collect();
 
         for iface in &ifaces {
@@ -144,7 +144,7 @@ fn get_vm_ip(dom: &Domain, sys_config: &SystemConfig) -> Result<String, RumError
             .position(|i| i.network == *ssh_interface);
 
         if let Some(idx) = iface_idx {
-            let expected_mac = domain_xml::generate_mac(vm_name, idx).to_lowercase();
+            let expected_mac = domain::generate_mac(vm_name, idx).to_lowercase();
             for iface in &ifaces {
                 if iface.hwaddr.to_lowercase() == expected_mac {
                     for addr in &iface.addrs {

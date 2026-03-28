@@ -1,18 +1,27 @@
 #[cfg(test)]
 mod tests {
-    use crate::config::tests::test_system_config;
-    use crate::config::*;
     use crate::domain_xml::*;
-    use crate::network_xml;
+    use crate::{
+        DomainConfig, InterfaceConfig, ResolvedDrive, ResolvedMount, network_xml,
+    };
     use std::path::PathBuf;
 
-    fn make_xml(
-        sys_config: &SystemConfig,
-        mounts: &[ResolvedMount],
-        drives: &[ResolvedDrive],
-    ) -> String {
+    fn test_domain_config() -> DomainConfig {
+        DomainConfig {
+            id: "aabbccdd".into(),
+            name: "test-vm".into(),
+            domain_type: "kvm".into(),
+            machine: "q35".into(),
+            memory_mb: 512,
+            cpus: 1,
+            nat: true,
+            interfaces: Vec::new(),
+        }
+    }
+
+    fn make_xml(config: &DomainConfig, mounts: &[ResolvedMount], drives: &[ResolvedDrive]) -> String {
         generate_domain_xml(
-            sys_config,
+            config,
             &PathBuf::from("/tmp/overlay.qcow2"),
             &PathBuf::from("/tmp/seed.iso"),
             mounts,
@@ -22,22 +31,7 @@ mod tests {
 
     #[test]
     fn xml_from_minimal_toml_has_defaults() {
-        let toml = r#"
-[image]
-base = "ubuntu.img"
-
-[resources]
-cpus = 1
-memory_mb = 512
-"#;
-        let config: Config = facet_toml::from_str(toml).unwrap();
-        let sc = SystemConfig {
-            id: "aabbccdd".into(),
-            name: Some("test-vm".into()),
-            config_path: PathBuf::from("/tmp/test-vm.rum.toml"),
-            config,
-        };
-        let xml = make_xml(&sc, &[], &[]);
+        let xml = make_xml(&test_domain_config(), &[], &[]);
         assert!(
             xml.contains(r#"type="kvm""#),
             "domain type should default to 'kvm', got:\n{xml}"
@@ -64,17 +58,15 @@ memory_mb = 512
                 target: "/mnt/project".into(),
                 readonly: false,
                 tag: "mnt_project".into(),
-                default: false,
             },
             ResolvedMount {
                 source: PathBuf::from("/data"),
                 target: "/mnt/data".into(),
                 readonly: true,
                 tag: "mnt_data".into(),
-                default: false,
             },
         ];
-        let xml = make_xml(&test_system_config(), &mounts, &[]);
+        let xml = make_xml(&test_domain_config(), &mounts, &[]);
         assert!(xml.contains("<memoryBacking>"));
         assert!(xml.contains(r#"<driver type="virtiofs">"#));
         assert!(xml.contains(r#"<source dir="/home/user/project">"#));
@@ -84,7 +76,7 @@ memory_mb = 512
 
     #[test]
     fn xml_without_mounts_no_memory_backing() {
-        let xml = make_xml(&test_system_config(), &[], &[]);
+        let xml = make_xml(&test_domain_config(), &[], &[]);
         assert!(!xml.contains("memoryBacking"));
         assert!(!xml.contains("virtiofs"));
     }
@@ -93,19 +85,15 @@ memory_mb = 512
     fn xml_with_drives_has_extra_disks() {
         let drives = vec![
             ResolvedDrive {
-                name: "data".into(),
-                size: "20G".into(),
                 path: PathBuf::from("/home/user/.local/share/rum/test-vm/drive-data.qcow2"),
                 dev: "vdb".into(),
             },
             ResolvedDrive {
-                name: "scratch".into(),
-                size: "50G".into(),
                 path: PathBuf::from("/home/user/.local/share/rum/test-vm/drive-scratch.qcow2"),
                 dev: "vdc".into(),
             },
         ];
-        let xml = make_xml(&test_system_config(), &[], &drives);
+        let xml = make_xml(&test_domain_config(), &[], &drives);
         assert!(xml.contains(r#"dev="vdb""#));
         assert!(xml.contains(r#"dev="vdc""#));
         assert!(xml.contains("drive-data.qcow2"));
@@ -114,7 +102,7 @@ memory_mb = 512
 
     #[test]
     fn xml_default_config_has_single_nat_interface() {
-        let xml = make_xml(&test_system_config(), &[], &[]);
+        let xml = make_xml(&test_domain_config(), &[], &[]);
         assert!(xml.contains(r#"<source network="default">"#));
         // No explicit MAC on NAT interface
         assert!(!xml.contains("<mac"));
@@ -122,13 +110,12 @@ memory_mb = 512
 
     #[test]
     fn xml_nat_plus_extra_nic() {
-        let mut sc = test_system_config();
-        sc.config.network.interfaces = vec![InterfaceConfig {
+        let mut config = test_domain_config();
+        config.interfaces = vec![InterfaceConfig {
             network: "hostonly".into(),
-            ip: "192.168.50.10".into(),
         }];
-        let xml = make_xml(&sc, &[], &[]);
-        let expected_net = network_xml::prefixed_name(&sc.id, "hostonly");
+        let xml = make_xml(&config, &[], &[]);
+        let expected_net = network_xml::prefixed_name(&config.id, "hostonly");
         // NAT interface
         assert!(xml.contains(r#"<source network="default">"#));
         // Extra interface with MAC and prefixed network name
@@ -142,14 +129,13 @@ memory_mb = 512
 
     #[test]
     fn xml_no_nat_with_extra_nic() {
-        let mut sc = test_system_config();
-        sc.config.network.nat = false;
-        sc.config.network.interfaces = vec![InterfaceConfig {
+        let mut config = test_domain_config();
+        config.nat = false;
+        config.interfaces = vec![InterfaceConfig {
             network: "isolated".into(),
-            ip: String::new(),
         }];
-        let xml = make_xml(&sc, &[], &[]);
-        let expected_net = network_xml::prefixed_name(&sc.id, "isolated");
+        let xml = make_xml(&config, &[], &[]);
+        let expected_net = network_xml::prefixed_name(&config.id, "isolated");
         assert!(!xml.contains(r#"<source network="default">"#));
         assert!(
             xml.contains(&format!(r#"<source network="{expected_net}">"#)),
@@ -159,9 +145,9 @@ memory_mb = 512
 
     #[test]
     fn xml_no_networking() {
-        let mut sc = test_system_config();
-        sc.config.network.nat = false;
-        let xml = make_xml(&sc, &[], &[]);
+        let mut config = test_domain_config();
+        config.nat = false;
+        let xml = make_xml(&config, &[], &[]);
         assert!(!xml.contains("<interface"));
         assert!(!xml.contains(r#"network="default""#));
     }

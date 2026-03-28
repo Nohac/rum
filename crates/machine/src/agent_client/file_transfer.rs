@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use rum_agent::{FileChunk, WriteFileInfo};
+use agent::{FileChunk, WriteFileInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 
 use crate::error::RumError;

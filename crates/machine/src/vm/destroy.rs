@@ -5,7 +5,7 @@ use virt::network::Network;
 
 use crate::config::SystemConfig;
 use crate::error::RumError;
-use crate::{network_xml, paths};
+use crate::paths;
 
 pub async fn destroy_vm(sys_config: &SystemConfig) -> Result<(), RumError> {
     let id = &sys_config.id;
@@ -24,7 +24,7 @@ pub async fn destroy_vm(sys_config: &SystemConfig) -> Result<(), RumError> {
         }
 
         for iface in &config.network.interfaces {
-            let net_name = network_xml::prefixed_name(id, &iface.network);
+            let net_name = domain::prefixed_name(id, &iface.network);
             if let Ok(net) = Network::lookup_by_name(&conn, &net_name) {
                 if net.is_active().unwrap_or(false) {
                     let _ = net.destroy();

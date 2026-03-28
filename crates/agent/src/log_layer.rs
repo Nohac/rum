@@ -5,7 +5,7 @@ use tracing::field::{Field, Visit};
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::Layer;
 
-use rum_agent::{LogEvent, LogLevel, LogStream};
+use agent::{LogEvent, LogLevel, LogStream};
 
 pub struct BroadcastLayer {
     tx: broadcast::Sender<LogEvent>,

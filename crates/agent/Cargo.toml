@@ -1,0 +1,17 @@
+[package]
+name = "agent"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "agent"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "signal", "sync", "process", "fs"] }
+tokio-vsock.workspace = true
+roam.workspace = true
+roam-stream.workspace = true
+facet.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }

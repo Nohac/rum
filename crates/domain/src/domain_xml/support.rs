@@ -4,7 +4,7 @@ use std::path::Path;
 
 use facet_xml as xml;
 
-use crate::config::{ResolvedDrive, ResolvedMount, SystemConfig};
+use crate::{DomainConfig, ResolvedDrive, ResolvedMount};
 
 use super::build::generate_domain_xml;
 use super::model::LiveVsock;
@@ -34,6 +34,7 @@ pub fn generate_mac(vm_name: &str, index: usize) -> String {
 ///
 /// Locates the `<vsock>...</vsock>` section in the XML, deserializes it
 /// with `facet_xml::from_str()`, and returns the CID if present.
+/// TODO: Pass pre-parsed xml instead of using "find"
 pub fn parse_vsock_cid(domain_xml: &str) -> Option<u32> {
     let vsock_start = domain_xml.find("<vsock")?;
     let vsock_end = domain_xml[vsock_start..]
@@ -47,14 +48,14 @@ pub fn parse_vsock_cid(domain_xml: &str) -> Option<u32> {
 
 /// Check if the generated XML differs from the saved XML on disk.
 pub fn xml_has_changed(
-    sys_config: &SystemConfig,
+    config: &DomainConfig,
     overlay_path: &Path,
     seed_path: &Path,
     mounts: &[ResolvedMount],
     drives: &[ResolvedDrive],
     existing_xml_path: &Path,
 ) -> bool {
-    let new_xml = generate_domain_xml(sys_config, overlay_path, seed_path, mounts, drives);
+    let new_xml = generate_domain_xml(config, overlay_path, seed_path, mounts, drives);
     match std::fs::read_to_string(existing_xml_path) {
         Ok(existing) => existing != new_xml,
         Err(_) => true,

@@ -1,10 +1,10 @@
 use roam_stream::{Client, Connector, HandshakeConfig, NoDispatcher, connect};
-use rum_agent::RumAgentClient;
+use agent::RumAgentClient;
 use tokio_vsock::{VsockAddr, VsockStream};
 
 use crate::error::RumError;
 
-pub const AGENT_BINARY: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_RUM_AGENT"));
+pub const AGENT_BINARY: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_AGENT"));
 
 pub const AGENT_SERVICE: &str = "\
 [Unit]

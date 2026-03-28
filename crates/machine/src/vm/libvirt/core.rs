@@ -71,5 +71,5 @@ pub async fn shutdown_domain(dom: &Domain) -> Result<(), RumError> {
 
 pub fn parse_vsock_cid(dom: &Domain) -> Option<u32> {
     let xml = dom.get_xml_desc(0).ok()?;
-    crate::domain_xml::parse_vsock_cid(&xml)
+    domain::parse_vsock_cid(&xml)
 }

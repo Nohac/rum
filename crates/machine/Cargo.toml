@@ -1,0 +1,31 @@
+[package]
+name = "machine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+
+agent.workspace = true
+domain.workspace = true
+
+tokio = { workspace = true, features = ["full"] }
+facet.workspace = true
+facet-toml.workspace = true
+miette = { workspace = true, features = ["fancy"] }
+thiserror.workspace = true
+indicatif.workspace = true
+tracing.workspace = true
+dirs.workspace = true
+virt.workspace = true
+futures-util.workspace = true
+facet-value.workspace = true
+facet-yaml.workspace = true
+ssh-key = { workspace = true, features = ["ed25519", "rand_core", "getrandom"] }
+rand_core = { workspace = true, features = ["getrandom"] }
+tokio-vsock.workspace = true
+roam.workspace = true
+roam-stream.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

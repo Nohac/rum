@@ -2,8 +2,7 @@
 
 use std::path::Path;
 
-use crate::config::{ResolvedDrive, ResolvedMount, SystemConfig};
-use crate::network_xml;
+use crate::{DomainConfig, ResolvedDrive, ResolvedMount, prefixed_name};
 
 use super::model::*;
 use super::support::generate_mac;
@@ -13,14 +12,12 @@ use super::support::generate_mac;
 /// Uses compact (single-line) output because facet-xml's pretty-printer
 /// corrupts text nodes. Libvirt parses both forms identically.
 pub fn generate_domain_xml(
-    sys_config: &SystemConfig,
+    config: &DomainConfig,
     overlay_path: &Path,
     seed_path: &Path,
     mounts: &[ResolvedMount],
     drives: &[ResolvedDrive],
 ) -> String {
-    let config = &sys_config.config;
-
     let memory_backing = if mounts.is_empty() {
         None
     } else {
@@ -108,7 +105,7 @@ pub fn generate_domain_xml(
     // Build network interfaces
     let mut interfaces = Vec::new();
 
-    if config.network.nat {
+    if config.nat {
         interfaces.push(Interface {
             iface_type: "network".into(),
             mac: None,
@@ -121,9 +118,9 @@ pub fn generate_domain_xml(
         });
     }
 
-    let display = sys_config.display_name();
-    for (i, iface_cfg) in config.network.interfaces.iter().enumerate() {
-        let libvirt_name = network_xml::prefixed_name(&sys_config.id, &iface_cfg.network);
+    let display = &config.name;
+    for (i, iface_cfg) in config.interfaces.iter().enumerate() {
+        let libvirt_name = prefixed_name(&config.id, &iface_cfg.network);
         interfaces.push(Interface {
             iface_type: "network".into(),
             mac: Some(InterfaceMac {
@@ -139,17 +136,17 @@ pub fn generate_domain_xml(
     }
 
     let domain = Domain {
-        domain_type: config.advanced.domain_type.clone(),
-        name: sys_config.display_name().to_string(),
+        domain_type: config.domain_type.clone(),
+        name: config.name.clone(),
         memory: Memory {
             unit: "KiB".into(),
-            value: config.resources.memory_mb * 1024,
+            value: config.memory_mb * 1024,
         },
-        vcpu: config.resources.cpus,
+        vcpu: config.cpus,
         os: Os {
             os_type: OsType {
                 arch: "x86_64".into(),
-                machine: config.advanced.machine.clone(),
+                machine: config.machine.clone(),
                 value: "hvm".into(),
             },
             boot: Boot { dev: "hd".into() },

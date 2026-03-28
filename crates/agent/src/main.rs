@@ -12,7 +12,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 use roam_stream::{HandshakeConfig, accept};
-use rum_agent::{
+use agent::{
     ExecResult, FileChunk, LogEvent, LogLevel, LogStream, ProvisionEvent, ProvisionResult,
     ProvisionScript, ReadFileResult, RunOn, RumAgent, RumAgentDispatcher, WriteFileInfo,
     WriteFileResult,
@@ -31,13 +31,13 @@ struct RumAgentImpl {
 }
 
 impl RumAgent for RumAgentImpl {
-    async fn ping(&self, _cx: &roam::Context) -> Result<rum_agent::ReadyResponse, String> {
+    async fn ping(&self, _cx: &roam::Context) -> Result<agent::ReadyResponse, String> {
         let hostname = std::fs::read_to_string("/etc/hostname")
             .unwrap_or_else(|_| "unknown".into())
             .trim()
             .to_string();
 
-        Ok(rum_agent::ReadyResponse {
+        Ok(agent::ReadyResponse {
             version: env!("CARGO_PKG_VERSION").into(),
             hostname,
         })

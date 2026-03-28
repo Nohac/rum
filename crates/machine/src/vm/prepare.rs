@@ -4,7 +4,7 @@ use virt::domain::Domain;
 
 use crate::config::SystemConfig;
 use crate::error::RumError;
-use crate::{cloudinit, domain_xml, image, overlay, paths, qcow2};
+use crate::{cloudinit, image, overlay, paths, qcow2};
 
 pub async fn prepare_vm(sys_config: &SystemConfig, base_image: &Path) -> Result<(), RumError> {
     let id = &sys_config.id;
@@ -29,7 +29,7 @@ pub async fn prepare_vm(sys_config: &SystemConfig, base_image: &Path) -> Result<
         mounts: &mounts,
         autologin: config.advanced.autologin,
         ssh_keys: &ssh_keys,
-        agent_binary: Some(crate::agent::AGENT_BINARY),
+        agent_binary: Some(crate::agent_client::AGENT_BINARY),
     };
     let seed_hash = cloudinit::seed_hash(&seed_config);
     let seed_path = paths::seed_path(id, name_opt, &seed_hash);
@@ -61,17 +61,57 @@ pub async fn prepare_vm(sys_config: &SystemConfig, base_image: &Path) -> Result<
         cloudinit::generate_seed_iso(&seed_path, &seed_config).await?;
     }
 
-    let xml = domain_xml::generate_domain_xml(sys_config, &overlay_path, &seed_path, &mounts, &drives);
+    let domain_config = domain::DomainConfig {
+        id: sys_config.id.clone(),
+        name: sys_config.display_name().to_string(),
+        domain_type: config.advanced.domain_type.clone(),
+        machine: config.advanced.machine.clone(),
+        memory_mb: config.resources.memory_mb,
+        cpus: config.resources.cpus,
+        nat: config.network.nat,
+        interfaces: config
+            .network
+            .interfaces
+            .iter()
+            .map(|iface| domain::InterfaceConfig {
+                network: iface.network.clone(),
+            })
+            .collect(),
+    };
+    let domain_mounts: Vec<domain::ResolvedMount> = mounts
+        .iter()
+        .map(|mount| domain::ResolvedMount {
+            source: mount.source.clone(),
+            target: mount.target.clone(),
+            readonly: mount.readonly,
+            tag: mount.tag.clone(),
+        })
+        .collect();
+    let domain_drives: Vec<domain::ResolvedDrive> = drives
+        .iter()
+        .map(|drive| domain::ResolvedDrive {
+            path: drive.path.clone(),
+            dev: drive.dev.clone(),
+        })
+        .collect();
+
+    let xml = domain::generate_domain_xml(
+        &domain_config,
+        &overlay_path,
+        &seed_path,
+        &domain_mounts,
+        &domain_drives,
+    );
     let conn = crate::vm::libvirt::connect(sys_config)?;
 
     match Domain::lookup_by_name(&conn, vm_name) {
         Ok(dom) => {
-            if domain_xml::xml_has_changed(
-                sys_config,
+            if domain::xml_has_changed(
+                &domain_config,
                 &overlay_path,
                 &seed_path,
-                &mounts,
-                &drives,
+                &domain_mounts,
+                &domain_drives,
                 &xml_path,
             ) {
                 if crate::vm::libvirt::is_running(&dom) {
