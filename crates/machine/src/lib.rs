@@ -7,7 +7,6 @@ pub mod config;
 pub mod error;
 pub mod image;
 pub mod iso9660;
-pub mod overlay;
 pub mod paths;
 pub mod qcow2;
 pub mod util;

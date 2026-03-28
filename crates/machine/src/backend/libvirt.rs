@@ -5,74 +5,64 @@ use crate::error::RumError;
 use crate::paths;
 use crate::vm::libvirt::{connect, is_running};
 
-pub struct LibvirtBackend;
+pub async fn ssh(sys_config: &SystemConfig, args: &[String]) -> Result<(), RumError> {
+    let vm_name = sys_config.display_name();
+    let id = &sys_config.id;
+    let name_opt = sys_config.name.as_deref();
+    let conn = connect(sys_config)?;
 
-impl super::Backend for LibvirtBackend {
-    async fn ssh(&self, sys_config: &SystemConfig, args: &[String]) -> Result<(), RumError> {
-        let vm_name = sys_config.display_name();
-        let id = &sys_config.id;
-        let name_opt = sys_config.name.as_deref();
-        let conn = connect(sys_config)?;
+    let dom = Domain::lookup_by_name(&conn, vm_name).map_err(|_| RumError::SshNotReady {
+        name: vm_name.to_string(),
+        reason: "VM is not defined".into(),
+    })?;
 
-        let dom = Domain::lookup_by_name(&conn, vm_name).map_err(|_| RumError::SshNotReady {
+    if !is_running(&dom) {
+        return Err(RumError::SshNotReady {
             name: vm_name.to_string(),
-            reason: "VM is not defined".into(),
-        })?;
-
-        if !is_running(&dom) {
-            return Err(RumError::SshNotReady {
-                name: vm_name.to_string(),
-                reason: "VM is not running".into(),
-            });
-        }
-
-        let ip = get_vm_ip(&dom, sys_config)?;
-        let ssh_key_path = paths::ssh_key_path(id, name_opt);
-
-        if !ssh_key_path.exists() {
-            return Err(RumError::SshNotReady {
-                name: vm_name.to_string(),
-                reason: "SSH key not found (run `rum up` first)".into(),
-            });
-        }
-
-        drop(conn);
-
-        let ssh_config = &sys_config.config.ssh;
-        let cmd_parts: Vec<&str> = ssh_config.command.split_whitespace().collect();
-        let program = cmd_parts[0];
-        let cmd_args = &cmd_parts[1..];
-
-        let key_str = ssh_key_path.to_string_lossy();
-        let user_host = format!("{}@{}", ssh_config.user, ip);
-
-        // Use exec() to replace the rum process with the ssh command, giving
-        // it full terminal control.
-        use std::os::unix::process::CommandExt;
-        let mut command = std::process::Command::new(program);
-        command.args(cmd_args);
-        command.args(["-i", &key_str]);
-        // Only inject host-key options for plain `ssh`. Custom commands like
-        // `kitty +kitten ssh` manage host verification themselves and these
-        // options can interfere with their terminal protocol.
-        if program == "ssh" {
-            command.args([
-                "-o",
-                "StrictHostKeyChecking=no",
-                "-o",
-                "UserKnownHostsFile=/dev/null",
-            ]);
-        }
-        command.arg(&user_host);
-        command.args(args);
-
-        // exec() replaces this process — only returns on error
-        let err = command.exec();
-        Err(RumError::Io {
-            context: format!("exec {}", ssh_config.command),
-            source: err,
-        })
+            reason: "VM is not running".into(),
+        });
     }
+
+    let ip = get_vm_ip(&dom, sys_config)?;
+    let ssh_key_path = paths::ssh_key_path(id, name_opt);
+
+    if !ssh_key_path.exists() {
+        return Err(RumError::SshNotReady {
+            name: vm_name.to_string(),
+            reason: "SSH key not found (run `rum up` first)".into(),
+        });
+    }
+
+    drop(conn);
+
+    let ssh_config = &sys_config.config.ssh;
+    let cmd_parts: Vec<&str> = ssh_config.command.split_whitespace().collect();
+    let program = cmd_parts[0];
+    let cmd_args = &cmd_parts[1..];
+
+    let key_str = ssh_key_path.to_string_lossy();
+    let user_host = format!("{}@{}", ssh_config.user, ip);
+
+    use std::os::unix::process::CommandExt;
+    let mut command = std::process::Command::new(program);
+    command.args(cmd_args);
+    command.args(["-i", &key_str]);
+    if program == "ssh" {
+        command.args([
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+        ]);
+    }
+    command.arg(&user_host);
+    command.args(args);
+
+    let err = command.exec();
+    Err(RumError::Io {
+        context: format!("exec {}", ssh_config.command),
+        source: err,
+    })
 }
 
 /// Look up the vsock CID for a running VM.

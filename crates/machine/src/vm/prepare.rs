@@ -4,7 +4,7 @@ use virt::domain::Domain;
 
 use crate::config::SystemConfig;
 use crate::error::RumError;
-use crate::{cloudinit, image, overlay, paths, qcow2};
+use crate::{cloudinit, image, paths, qcow2};
 
 pub async fn prepare_vm(sys_config: &SystemConfig, base_image: &Path) -> Result<(), RumError> {
     let id = &sys_config.id;
@@ -38,7 +38,7 @@ pub async fn prepare_vm(sys_config: &SystemConfig, base_image: &Path) -> Result<
     let disk_size = crate::util::parse_size(&config.resources.disk)?;
 
     if !overlay_path.exists() {
-        overlay::create_overlay(base_image, &overlay_path, Some(disk_size)).await?;
+        qcow2::create_qcow2_overlay(&overlay_path, base_image, Some(disk_size))?;
     }
     for d in &drives {
         if !d.path.exists() {
