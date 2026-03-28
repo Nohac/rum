@@ -1,4 +1,3 @@
-use rum_agent::{LogEvent, LogLevel, LogStream};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -8,33 +7,6 @@ use crate::config::PortForward;
 use crate::error::RumError;
 
 const FORWARD_PORT: u32 = 2223;
-
-pub(crate) fn start_log_subscription(agent: &super::AgentClient) -> JoinHandle<()> {
-    let (tx, mut rx) = roam::channel::<LogEvent>();
-    let agent = agent.clone();
-
-    tokio::spawn(async move {
-        let subscribe_fut = agent.subscribe_logs(tx);
-        tokio::spawn(async move {
-            let _ = subscribe_fut.await;
-        });
-
-        while let Ok(Some(event)) = rx.recv().await {
-            let stream = match event.stream {
-                LogStream::Log => "log",
-                LogStream::Stdout => "stdout",
-                LogStream::Stderr => "stderr",
-            };
-            match event.level {
-                LogLevel::Trace => tracing::trace!(target: "guest", stream, "{}", event.message),
-                LogLevel::Debug => tracing::debug!(target: "guest", stream, "{}", event.message),
-                LogLevel::Info => tracing::info!(target: "guest", stream, "{}", event.message),
-                LogLevel::Warn => tracing::warn!(target: "guest", stream, "{}", event.message),
-                LogLevel::Error => tracing::error!(target: "guest", stream, "{}", event.message),
-            }
-        }
-    })
-}
 
 pub async fn start_port_forwards(
     cid: u32,
