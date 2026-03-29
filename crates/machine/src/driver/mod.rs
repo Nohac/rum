@@ -18,4 +18,4 @@ pub trait VirtualMachine: Clone {
     async fn destroy(&self) -> Result<(), Self::Error>;
 }
 
-pub use libvirt::LibvirtMachine;
+pub use libvirt::LibvirtDriver;

@@ -1,17 +1,18 @@
 [package]
-name = "guestagent"
+name = "guest"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "guestagent"
+name = "guest"
 path = "src/main.rs"
 
 [dependencies]
-tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "signal", "sync", "process", "fs"] }
+tokio = { workspace = true, features = ["rt", "net", "io-util", "io-std", "macros", "signal", "sync", "process", "fs"] }
 tokio-vsock.workspace = true
 roam.workspace = true
 roam-stream.workspace = true
 facet.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+thiserror.workspace = true

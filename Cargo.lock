@@ -971,12 +971,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "guestagent"
+name = "guest"
 version = "0.1.0"
 dependencies = [
  "facet",
  "roam",
  "roam-stream",
+ "thiserror",
  "tokio",
  "tokio-vsock",
  "tracing",
@@ -1442,7 +1443,7 @@ dependencies = [
  "facet-value",
  "facet-yaml",
  "futures-util",
- "guestagent",
+ "guest",
  "indicatif",
  "miette",
  "rand_core 0.6.4",

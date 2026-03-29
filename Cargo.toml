@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/guestagent",
+    "crates/guest",
     "crates/domain",
     "crates/machine",
 ]
@@ -8,7 +8,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-guestagent = { path = "crates/guestagent", artifact = "bin", lib = true, target = "x86_64-unknown-linux-musl" }
+guest = { path = "crates/guest", artifact = "bin", lib = true, target = "x86_64-unknown-linux-musl" }
 domain = { path = "crates/domain" }
 
 dirs = "6"

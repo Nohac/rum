@@ -12,7 +12,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 use roam_stream::{HandshakeConfig, accept};
-use guestagent::{
+use guest::agent::{
     ExecResult, FileChunk, LogEvent, LogLevel, LogStream, ProvisionEvent, ProvisionResult,
     ProvisionScript, ReadFileResult, RunOn, Agent, AgentDispatcher, WriteFileInfo,
     WriteFileResult,
@@ -31,13 +31,13 @@ struct AgentService {
 }
 
 impl Agent for AgentService {
-    async fn ping(&self, _cx: &roam::Context) -> Result<guestagent::ReadyResponse, String> {
+    async fn ping(&self, _cx: &roam::Context) -> Result<guest::agent::ReadyResponse, String> {
         let hostname = std::fs::read_to_string("/etc/hostname")
             .unwrap_or_else(|_| "unknown".into())
             .trim()
             .to_string();
 
-        Ok(guestagent::ReadyResponse {
+        Ok(guest::agent::ReadyResponse {
             version: env!("CARGO_PKG_VERSION").into(),
             hostname,
         })

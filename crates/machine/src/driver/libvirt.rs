@@ -15,12 +15,12 @@ use crate::state::MachineState;
 use crate::{cloudinit, image};
 
 #[derive(Clone)]
-pub struct LibvirtMachine {
+pub struct LibvirtDriver {
     system: Arc<SystemConfig>,
     layout: MachineLayout,
 }
 
-impl LibvirtMachine {
+impl LibvirtDriver {
     pub fn new(system: SystemConfig) -> Self {
         let layout = MachineLayout::from_config(&system);
         Self {
@@ -335,7 +335,7 @@ impl LibvirtMachine {
     }
 }
 
-impl VirtualMachine for LibvirtMachine {
+impl VirtualMachine for LibvirtDriver {
     type Error = Error;
 
     fn id(&self) -> &str {
@@ -366,7 +366,7 @@ impl VirtualMachine for LibvirtMachine {
             mounts: &mounts,
             autologin: config.advanced.autologin,
             ssh_keys: &ssh_keys,
-            agent_binary: Some(crate::agent_client::AGENT_BINARY),
+            agent_binary: Some(crate::guest::AGENT_BINARY),
         };
         let seed_hash = cloudinit::seed_hash(&seed_config);
         let seed_path = self.layout.seed_path(&seed_hash);
@@ -460,7 +460,7 @@ impl VirtualMachine for LibvirtMachine {
             mounts: &mounts,
             autologin: config.advanced.autologin,
             ssh_keys: &ssh_keys,
-            agent_binary: Some(crate::agent_client::AGENT_BINARY),
+            agent_binary: Some(crate::guest::AGENT_BINARY),
         };
         let seed_hash = cloudinit::seed_hash(&seed_config);
         let seed_path = self.layout.seed_path(&seed_hash);

@@ -2,80 +2,84 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-pub use guestagent::{ProvisionScript, RunOn};
-use guestagent::ProvisionEvent;
+use crate::agent::{ProvisionEvent, ProvisionScript};
 
-use crate::error::Error;
+use super::{Client, ClientError};
 
-pub async fn run_provision(
-    agent: &super::AgentClient,
-    scripts: Vec<guestagent::ProvisionScript>,
-    logs_dir: &Path,
-) -> Result<(), Error> {
-    let script_names: Vec<String> = scripts.iter().map(|s| s.name.clone()).collect();
+impl<C> Client<C>
+where
+    C: roam_stream::Connector,
+{
+    pub async fn provision(
+        &self,
+        scripts: Vec<ProvisionScript>,
+        logs_dir: &Path,
+    ) -> Result<(), ClientError> {
+        let script_names: Vec<String> = scripts.iter().map(|s| s.name.clone()).collect();
 
-    let (tx, rx) = roam::channel::<ProvisionEvent>();
-    let agent = agent.clone();
-    let task = tokio::spawn(async move { agent.provision(scripts, tx).await });
+        let (tx, rx) = roam::channel::<ProvisionEvent>();
+        let agent = self.rpc().clone();
+        let task = tokio::spawn(async move { agent.provision(scripts, tx).await });
 
-    let rx = Arc::new(tokio::sync::Mutex::new(rx));
-    let mut failed = false;
+        let rx = Arc::new(tokio::sync::Mutex::new(rx));
+        let mut failed = false;
 
-    for script_name in &script_names {
-        let rx = rx.clone();
-        let mut logger = ScriptLogger::new(logs_dir, script_name).ok();
-        let success = async move {
-            let mut rx = rx.lock().await;
-            while let Ok(Some(event)) = rx.recv().await {
-                match event {
-                    ProvisionEvent::Done(code) => {
-                        if let Some(lg) = logger.take() {
-                            lg.finish(code == 0);
+        for script_name in &script_names {
+            let rx = rx.clone();
+            let mut logger = ScriptLogger::new(logs_dir, script_name).ok();
+            let success = async move {
+                let mut rx = rx.lock().await;
+                while let Ok(Some(event)) = rx.recv().await {
+                    match event {
+                        ProvisionEvent::Done(code) => {
+                            if let Some(lg) = logger.take() {
+                                lg.finish(code == 0);
+                            }
+                            return code == 0;
                         }
-                        return code == 0;
-                    }
-                    ProvisionEvent::Stdout(ref line) | ProvisionEvent::Stderr(ref line) => {
-                        if let Some(ref mut lg) = logger {
-                            lg.write_line(line);
+                        ProvisionEvent::Stdout(ref line) | ProvisionEvent::Stderr(ref line) => {
+                            if let Some(ref mut lg) = logger {
+                                lg.write_line(line);
+                            }
                         }
                     }
                 }
+                if let Some(lg) = logger.take() {
+                    lg.finish(false);
+                }
+                false
             }
-            if let Some(lg) = logger.take() {
-                lg.finish(false);
+            .await;
+
+            if !success {
+                failed = true;
+                break;
             }
-            false
         }
-        .await;
 
-        if !success {
-            failed = true;
-            break;
+        for name in &script_names {
+            rotate_logs(logs_dir, name, 10);
         }
+
+        let result = task
+            .await
+            .map_err(|e| ClientError::Io {
+                context: format!("provision task panicked: {e}"),
+                source: std::io::Error::other(e.to_string()),
+            })?
+            .map_err(|message| ClientError::Rpc {
+                context: "provision RPC failed".into(),
+                message: message.to_string(),
+            })?;
+
+        if failed || !result.success {
+            return Err(ClientError::ProvisionFailed {
+                script: result.failed_script,
+            });
+        }
+
+        Ok(())
     }
-
-    for name in &script_names {
-        rotate_logs(logs_dir, name, 10);
-    }
-
-    let result = task
-        .await
-        .map_err(|e| Error::Io {
-            context: format!("provision task panicked: {e}"),
-            source: std::io::Error::other(e.to_string()),
-        })?
-        .map_err(|e| Error::Io {
-            context: format!("provision RPC failed: {e}"),
-            source: std::io::Error::other(e.to_string()),
-        })?;
-
-    if failed || !result.success {
-        return Err(Error::ProvisionFailed {
-            script: result.failed_script,
-        });
-    }
-
-    Ok(())
 }
 
 struct ScriptLogger {

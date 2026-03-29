@@ -1,3 +1,4 @@
+use roam_stream::Connector;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -6,7 +7,44 @@ use tokio_vsock::{VsockAddr, VsockStream};
 use crate::config::PortForward;
 use crate::error::Error;
 
+pub const AGENT_BINARY: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_GUEST"));
+
+pub const AGENT_SERVICE: &str = "\
+[Unit]
+Description=rum guest agent
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/rum-agent
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+";
+
+pub const RPC_PORT: u32 = 2222;
 const FORWARD_PORT: u32 = 2223;
+
+#[derive(Clone)]
+pub struct VsockConnector {
+    cid: u32,
+}
+
+impl VsockConnector {
+    pub fn new(cid: u32) -> Self {
+        Self { cid }
+    }
+}
+
+impl Connector for VsockConnector {
+    type Transport = VsockStream;
+
+    async fn connect(&self) -> std::io::Result<VsockStream> {
+        VsockStream::connect(VsockAddr::new(self.cid, RPC_PORT)).await
+    }
+}
 
 pub async fn start_port_forwards(
     cid: u32,

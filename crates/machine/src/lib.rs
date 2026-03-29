@@ -1,8 +1,8 @@
 #![allow(unused_assignments)] // thiserror/miette proc macros trigger false positives
 
-pub mod agent_client;
 pub mod cloudinit;
 pub mod config;
+pub mod guest;
 pub mod error;
 pub mod image;
 pub mod iso9660;

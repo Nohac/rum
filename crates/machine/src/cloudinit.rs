@@ -144,7 +144,7 @@ fn build_user_data(config: &SeedConfig) -> String {
     if agent_binary.is_some() {
         write_files.push(value!({
             "path": "/etc/systemd/system/rum-agent.service",
-            "content": (crate::agent_client::AGENT_SERVICE),
+            "content": (crate::guest::AGENT_SERVICE),
         }));
     }
 
