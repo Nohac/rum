@@ -18,19 +18,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "agent"
-version = "0.1.0"
-dependencies = [
- "facet",
- "roam",
- "roam-stream",
- "tokio",
- "tokio-vsock",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -984,6 +971,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "guestagent"
+version = "0.1.0"
+dependencies = [
+ "facet",
+ "roam",
+ "roam-stream",
+ "tokio",
+ "tokio-vsock",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "hash32"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1435,7 +1435,6 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 name = "machine"
 version = "0.1.0"
 dependencies = [
- "agent",
  "dirs",
  "domain",
  "facet",
@@ -1443,6 +1442,7 @@ dependencies = [
  "facet-value",
  "facet-yaml",
  "futures-util",
+ "guestagent",
  "indicatif",
  "miette",
  "rand_core 0.6.4",

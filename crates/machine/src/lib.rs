@@ -8,7 +8,7 @@ pub mod image;
 pub mod iso9660;
 pub mod layout;
 pub mod paths;
-pub mod provider;
+pub mod driver;
 pub mod qcow2;
 pub mod state;
 pub mod util;

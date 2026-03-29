@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use agent::{FileChunk, WriteFileInfo};
+use guestagent::{FileChunk, WriteFileInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 
 use crate::error::Error;

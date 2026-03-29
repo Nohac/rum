@@ -2,14 +2,14 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-pub use agent::{ProvisionScript, RunOn};
-use agent::ProvisionEvent;
+pub use guestagent::{ProvisionScript, RunOn};
+use guestagent::ProvisionEvent;
 
 use crate::error::Error;
 
 pub async fn run_provision(
     agent: &super::AgentClient,
-    scripts: Vec<agent::ProvisionScript>,
+    scripts: Vec<guestagent::ProvisionScript>,
     logs_dir: &Path,
 ) -> Result<(), Error> {
     let script_names: Vec<String> = scripts.iter().map(|s| s.name.clone()).collect();

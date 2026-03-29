@@ -1,4 +1,4 @@
-use agent::{LogEvent, LogStream};
+use guestagent::{LogEvent, LogStream};
 use tokio::io::AsyncWriteExt;
 
 use crate::error::Error;

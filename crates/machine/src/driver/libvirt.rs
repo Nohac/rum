@@ -9,7 +9,7 @@ use virt::network::Network;
 use crate::config::SystemConfig;
 use crate::error::Error;
 use crate::layout::MachineLayout;
-use crate::provider::VirtualMachine;
+use crate::driver::VirtualMachine;
 use crate::qcow2;
 use crate::state::MachineState;
 use crate::{cloudinit, image};

@@ -1,10 +1,10 @@
 use roam_stream::{Client, Connector, HandshakeConfig, NoDispatcher, connect};
-use agent::AgentClient as RpcAgentClient;
+use guestagent::AgentClient as RpcAgentClient;
 use tokio_vsock::{VsockAddr, VsockStream};
 
 use crate::error::Error;
 
-pub const AGENT_BINARY: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_AGENT"));
+pub const AGENT_BINARY: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_GUESTAGENT"));
 
 pub const AGENT_SERVICE: &str = "\
 [Unit]
