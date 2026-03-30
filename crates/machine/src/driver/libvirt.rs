@@ -7,9 +7,9 @@ use virt::error as virt_error;
 use virt::network::Network;
 
 use crate::config::SystemConfig;
+use crate::driver::Driver;
 use crate::error::Error;
 use crate::layout::MachineLayout;
-use crate::driver::VirtualMachine;
 use crate::qcow2;
 use crate::{cloudinit, image};
 
@@ -342,7 +342,7 @@ impl LibvirtDriver {
     }
 }
 
-impl VirtualMachine for LibvirtDriver {
+impl Driver for LibvirtDriver {
     type Error = Error;
 
     fn id(&self) -> &str {

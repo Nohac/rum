@@ -3,7 +3,7 @@ use virt::domain::Domain;
 use virt::error as virt_error;
 
 use crate::config::SystemConfig;
-use crate::driver::LibvirtDriver;
+use crate::driver::{Driver, LibvirtDriver};
 use crate::error::Error;
 use crate::layout::MachineLayout;
 use crate::{cloudinit, image, paths};
@@ -30,12 +30,12 @@ pub enum InstanceState {
 /// it owns recovered state and persisted identity, while the contained driver
 /// performs backend-specific actions.
 #[derive(Clone)]
-pub struct Instance {
-    driver: LibvirtDriver,
+pub struct Instance<D: Driver> {
+    driver: D,
 }
 
-impl Instance {
-    /// Create an instance view for the given system config.
+impl Instance<LibvirtDriver> {
+    /// Create a libvirt-backed instance view for the given system config.
     ///
     /// This does not mutate backend state. It prepares the persistent identity
     /// and backend handle needed for recovery and later operations.
@@ -44,12 +44,21 @@ impl Instance {
             driver: LibvirtDriver::new(system),
         }
     }
+}
 
+impl<D: Driver> Instance<D> {
     /// Return a clonable backend driver for this instance.
-    pub fn driver(&self) -> LibvirtDriver {
+    pub fn driver(&self) -> D {
         self.driver.clone()
     }
 
+    /// Access the backend driver by reference.
+    pub fn driver_ref(&self) -> &D {
+        &self.driver
+    }
+}
+
+impl Instance<LibvirtDriver> {
     /// Access the resolved system config for this instance.
     pub fn system(&self) -> &SystemConfig {
         self.driver.system()

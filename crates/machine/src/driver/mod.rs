@@ -8,7 +8,7 @@ use std::path::Path;
 /// trait. Those are owned by the instance layer, while a driver focuses on
 /// long-running backend operations once the runtime has been selected.
 #[allow(async_fn_in_trait)]
-pub trait VirtualMachine: Clone {
+pub trait Driver: Clone {
     type Error;
 
     /// Stable configured identity for the managed runtime.
