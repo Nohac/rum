@@ -7,8 +7,9 @@ use virt::error as virt_error;
 use virt::network::Network;
 
 use crate::config::SystemConfig;
-use crate::driver::Driver;
+use crate::driver::{Driver, RecoverableDriver};
 use crate::error::Error;
+use crate::instance::InstanceState;
 use crate::layout::MachineLayout;
 use crate::qcow2;
 use crate::{cloudinit, image};
@@ -560,6 +561,105 @@ impl Driver for LibvirtDriver {
         }
 
         Ok(())
+    }
+}
+
+impl RecoverableDriver for LibvirtDriver {
+    fn recover(&self) -> Result<InstanceState, Error> {
+        let config = &self.system.config;
+        let mounts = self.system.resolve_mounts()?;
+        let drives = self.system.resolve_drives()?;
+
+        let ssh_keys = if self.layout.ssh_key_path.with_extension("pub").exists() {
+            std::fs::read_to_string(self.layout.ssh_key_path.with_extension("pub"))
+                .map(|k| vec![k.trim().to_string()])
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        let seed_config = cloudinit::SeedConfig {
+            hostname: self.system.hostname(),
+            user_name: &config.user.name,
+            user_groups: &config.user.groups,
+            mounts: &mounts,
+            autologin: config.advanced.autologin,
+            ssh_keys: &ssh_keys,
+            agent_binary: Some(crate::guest::AGENT_BINARY),
+        };
+        let seed_hash = cloudinit::seed_hash(&seed_config);
+        let seed_path = self.layout.seed_path(&seed_hash);
+
+        let domain_config = domain::DomainConfig {
+            id: self.system.id.clone(),
+            name: self.system.display_name().to_string(),
+            domain_type: config.advanced.domain_type.clone(),
+            machine: config.advanced.machine.clone(),
+            memory_mb: config.resources.memory_mb,
+            cpus: config.resources.cpus,
+            nat: config.network.nat,
+            interfaces: config
+                .network
+                .interfaces
+                .iter()
+                .map(|iface| domain::InterfaceConfig {
+                    network: iface.network.clone(),
+                })
+                .collect(),
+        };
+        let domain_mounts: Vec<domain::ResolvedMount> = mounts
+            .iter()
+            .map(|mount| domain::ResolvedMount {
+                source: mount.source.clone(),
+                target: mount.target.clone(),
+                readonly: mount.readonly,
+                tag: mount.tag.clone(),
+            })
+            .collect();
+        let domain_drives: Vec<domain::ResolvedDrive> = drives
+            .iter()
+            .map(|drive| domain::ResolvedDrive {
+                path: drive.path.clone(),
+                dev: drive.dev.clone(),
+            })
+            .collect();
+
+        let conn = self.connect()?;
+        let domain = Domain::lookup_by_name(&conn, self.name()).ok();
+        let running = domain.as_ref().is_some_and(|dom| dom.is_active().unwrap_or(false));
+
+        let stale = running
+            && domain::xml_has_changed(
+                &domain_config,
+                &self.layout.overlay_path,
+                &seed_path,
+                &domain_mounts,
+                &domain_drives,
+                &self.layout.xml_path,
+            );
+
+        let overlay_exists = self.layout.overlay_path.exists();
+        let marker_exists = self.layout.provisioned_marker.exists();
+        let image_cached = image::is_cached(&config.image.base, &crate::paths::cache_dir());
+
+        let state = match (
+            running,
+            stale,
+            overlay_exists,
+            marker_exists,
+            domain.is_some(),
+            image_cached,
+        ) {
+            (true, true, _, _, _, _) => InstanceState::StaleConfig,
+            (true, false, _, _, _, _) => InstanceState::Running,
+            (false, _, true, true, _, _) => InstanceState::Stopped,
+            (false, _, true, false, true, _) => InstanceState::PartialBoot,
+            (false, _, true, false, false, _) => InstanceState::Prepared,
+            (false, _, false, _, _, true) => InstanceState::ImageCached,
+            (false, _, false, _, _, false) => InstanceState::Missing,
+        };
+
+        Ok(state)
     }
 }
 
