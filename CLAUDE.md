@@ -60,6 +60,8 @@ Rust 2024 edition. Code is split into focused modules — avoid monolithic files
 - Avoid generic bucket files like `types.rs`, `helpers.rs`, `common.rs`, `workers.rs`, or similarly broad names unless the contents are truly one cohesive model.
 - Prefer the **minimum file count that preserves clear ownership**. Do not split a domain into many tiny files unless those parts have independent reasons to change.
 - If a small state type is only used by one workflow slice, co-locate it with the behavior that owns it instead of creating a separate file just because it is "a type".
+- Prefer a **literate programming** style for core architecture and tricky workflow code: add concise rustdoc/doc comments that explain the ownership model, invariants, and why the code is structured the way it is.
+- Public types and functions that define architectural boundaries should generally have rustdoc comments, even when the code is otherwise straightforward.
 
 ### Domain Ownership Rules
 
