@@ -9,6 +9,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 guest.workspace = true
 domain.workspace = true
 
+async-trait.workspace = true
 tokio = { workspace = true, features = ["full"] }
 facet.workspace = true
 facet-toml.workspace = true

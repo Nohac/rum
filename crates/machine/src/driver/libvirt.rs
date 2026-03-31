@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use virt::connect::Connect;
 use virt::domain::Domain;
 use virt::error as virt_error;
@@ -343,6 +344,7 @@ impl LibvirtDriver {
     }
 }
 
+#[async_trait]
 impl Driver for LibvirtDriver {
     type Error = Error;
 

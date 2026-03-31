@@ -50,6 +50,11 @@ impl Instance<LibvirtDriver> {
 }
 
 impl<D: Driver> Instance<D> {
+    /// Create an instance directly from an already constructed backend driver.
+    pub fn new_with_driver(driver: D, backend: BackendKind) -> Self {
+        Self { backend, driver }
+    }
+
     /// Return the selected backend kind for this instance.
     pub fn backend_kind(&self) -> BackendKind {
         self.backend

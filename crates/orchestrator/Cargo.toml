@@ -1,0 +1,19 @@
+[package]
+name = "orchestrator"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+guest.workspace = true
+machine.workspace = true
+
+async-trait.workspace = true
+bevy.workspace = true
+ecsdk.workspace = true
+seldom_state.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

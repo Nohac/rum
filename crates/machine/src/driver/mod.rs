@@ -2,6 +2,8 @@ mod libvirt;
 
 use std::path::Path;
 
+use async_trait::async_trait;
+
 use crate::instance::InstanceState;
 
 /// Standard operational surface for one runtime backend handle.
@@ -9,7 +11,11 @@ use crate::instance::InstanceState;
 /// Recovery and persisted state inspection are intentionally not part of this
 /// trait. Those are owned by the instance layer, while a driver focuses on
 /// long-running backend operations once the runtime has been selected.
-#[allow(async_fn_in_trait)]
+/// We use `async_trait` here instead of the explicit `impl Future + Send`
+/// form because these operations are awaited inside `ecsdk` entity tasks,
+/// which require `Send` futures, and the explicit RPITIT form makes the trait
+/// surface harder to read than the benefit is worth.
+#[async_trait]
 pub trait Driver: Clone {
     type Error;
 
