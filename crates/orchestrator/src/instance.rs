@@ -1,29 +1,30 @@
 use std::marker::PhantomData;
 use std::path::PathBuf;
 
+use bevy::prelude::Deref;
 use ecsdk::prelude::*;
 use guest::agent::ProvisionScript;
 
 use crate::driver::OrchestrationDriver;
 
 /// Component that attaches a concrete runtime instance to an ECS entity.
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Deref)]
 pub struct ManagedInstance<D: OrchestrationDriver>(pub machine::instance::Instance<D>);
 
 /// Component that carries the recovered persistent/runtime state for an entity.
-#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug, Deref)]
 pub struct RecoveredState(pub machine::instance::InstanceState);
 
 /// Resolved base image path used by the prepare step.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Deref)]
 pub struct ResolvedBaseImage(pub PathBuf);
 
 /// Provisioning plan to run once guest connectivity is available.
-#[derive(Component, Clone, Default, Debug)]
+#[derive(Component, Clone, Default, Debug, Deref)]
 pub struct ProvisionPlan(pub Vec<ProvisionScript>);
 
 /// Recorded orchestration error for an entity.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Deref)]
 pub struct EntityError(pub String);
 
 /// Per-entity lifecycle phase driven by the orchestrator state machine.
@@ -53,5 +54,5 @@ pub enum OrchestratorPhase {
 /// Marker component that carries the concrete driver type into the ECS world.
 ///
 /// This is useful when spawning orchestration entities from bootstrap code.
-#[derive(Component, Default)]
+#[derive(Component, Default, Deref)]
 pub struct BackendDriver<D: OrchestrationDriver>(pub PhantomData<D>);

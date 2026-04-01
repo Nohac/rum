@@ -294,7 +294,10 @@ mod tests {
 
     use super::*;
     use crate::driver::OrchestrationDriver;
-    use crate::instance::{ManagedInstance, RecoveredState};
+    use crate::instance::{
+        ManagedInstance, RecoveredState, ResolvedBaseImage,
+        instance_phase::{Booting, ConnectingGuest, Preparing, Provisioning, Running, ShuttingDown, Stopped},
+    };
 
     #[derive(Clone)]
     struct MockDriver {
@@ -386,8 +389,59 @@ mod tests {
         app.update();
 
         assert_eq!(
-            app.world().get::<RecoveredState>(entity).map(|s| s.0),
+            app.world().get::<RecoveredState>(entity).map(|s| **s),
             Some(machine::instance::InstanceState::Missing)
         );
+    }
+
+    #[test]
+    fn missing_instance_reaches_stopped_end_state() {
+        let mut app = test_app();
+        let entity = app
+            .world_mut()
+            .spawn((
+                ManagedInstance(machine::instance::Instance::new_with_driver(
+                    MockDriver::new(machine::instance::InstanceState::Missing),
+                    machine::instance::BackendKind::Libvirt,
+                )),
+                ResolvedBaseImage("/tmp/mock-image.qcow2".into()),
+                ProvisionPlan::default(),
+                build_instance_sm::<MockDriver>(),
+                Recovering,
+            ))
+            .id();
+
+        app.update();
+        assert_eq!(
+            app.world().get::<RecoveredState>(entity).map(|s| **s),
+            Some(machine::instance::InstanceState::Missing)
+        );
+
+        app.update();
+        assert!(app.world().get::<Preparing>(entity).is_some());
+
+        app.world_mut().entity_mut(entity).insert(Done::Success);
+        app.update();
+        assert!(app.world().get::<Booting>(entity).is_some());
+
+        app.world_mut().entity_mut(entity).insert(Done::Success);
+        app.update();
+        assert!(app.world().get::<ConnectingGuest>(entity).is_some());
+
+        app.world_mut().entity_mut(entity).insert(Done::Success);
+        app.update();
+        assert!(app.world().get::<Provisioning>(entity).is_some());
+
+        app.world_mut().entity_mut(entity).insert(Done::Success);
+        app.update();
+        assert!(app.world().get::<Running>(entity).is_some());
+
+        app.world_mut().resource_mut::<ShutdownRequested>().0 = true;
+        app.update();
+        assert!(app.world().get::<ShuttingDown>(entity).is_some());
+
+        app.world_mut().entity_mut(entity).insert(Done::Success);
+        app.update();
+        assert!(app.world().get::<Stopped>(entity).is_some());
     }
 }
