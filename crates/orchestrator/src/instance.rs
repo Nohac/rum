@@ -27,6 +27,26 @@ pub struct ProvisionPlan(pub Vec<ProvisionScript>);
 #[derive(Component, Clone, Debug, Deref)]
 pub struct EntityError(pub String);
 
+/// Marker inserted once the prepare step has completed successfully.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct PrepareFinished;
+
+/// Marker inserted once the boot step has completed successfully.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct BootFinished;
+
+/// Marker inserted once guest connectivity has been established.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct GuestConnected;
+
+/// Marker inserted once provisioning has completed successfully.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct ProvisionFinished;
+
+/// Marker inserted once shutdown has completed successfully.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct ShutdownFinished;
+
 /// Per-entity lifecycle phase driven by the orchestrator state machine.
 #[derive(Component, StateComponent, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum InstancePhase {

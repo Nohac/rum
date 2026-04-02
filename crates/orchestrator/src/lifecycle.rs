@@ -4,7 +4,8 @@ use seldom_state::prelude::*;
 
 use crate::driver::OrchestrationDriver;
 use crate::instance::{
-    EntityError, ManagedInstance, ProvisionPlan, RecoveredState, ResolvedBaseImage,
+    BootFinished, EntityError, GuestConnected, ManagedInstance, PrepareFinished,
+    ProvisionFinished, ProvisionPlan, RecoveredState, ResolvedBaseImage, ShutdownFinished,
     instance_phase::{Booting, ConnectingGuest, Failed, Preparing, Provisioning, Recovering, Running, ShuttingDown, Stopped},
 };
 
@@ -15,22 +16,46 @@ pub struct ShutdownRequested(pub bool);
 /// Domain messages emitted by orchestrator tasks and applied back into ECS.
 #[derive(Clone, Debug)]
 pub enum OrchestratorMessage {
-    MarkDone { entity: Entity },
-    MarkFailed { entity: Entity, message: String },
+    PrepareFinished { entity: Entity },
+    BootFinished { entity: Entity },
+    GuestConnected { entity: Entity },
+    ProvisionFinished { entity: Entity },
+    ShutdownFinished { entity: Entity },
+    OperationFailed { entity: Entity, message: String },
     RequestShutdown,
 }
 
 impl ApplyMessage for OrchestratorMessage {
     fn apply(&self, world: &mut World) {
         match self {
-            Self::MarkDone { entity } => {
+            Self::PrepareFinished { entity } => {
                 if let Ok(mut entity) = world.get_entity_mut(*entity) {
-                    entity.insert(Done::Success);
+                    entity.insert(PrepareFinished);
                 }
             }
-            Self::MarkFailed { entity, message } => {
+            Self::BootFinished { entity } => {
                 if let Ok(mut entity) = world.get_entity_mut(*entity) {
-                    entity.insert((EntityError(message.clone()), Done::Failure));
+                    entity.insert(BootFinished);
+                }
+            }
+            Self::GuestConnected { entity } => {
+                if let Ok(mut entity) = world.get_entity_mut(*entity) {
+                    entity.insert(GuestConnected);
+                }
+            }
+            Self::ProvisionFinished { entity } => {
+                if let Ok(mut entity) = world.get_entity_mut(*entity) {
+                    entity.insert(ProvisionFinished);
+                }
+            }
+            Self::ShutdownFinished { entity } => {
+                if let Ok(mut entity) = world.get_entity_mut(*entity) {
+                    entity.insert(ShutdownFinished);
+                }
+            }
+            Self::OperationFailed { entity, message } => {
+                if let Ok(mut entity) = world.get_entity_mut(*entity) {
+                    entity.insert(EntityError(message.clone()));
                 }
             }
             Self::RequestShutdown => {
@@ -87,6 +112,36 @@ fn failed_recovery<D: OrchestrationDriver>(
         )
 }
 
+fn has_prepare_finished(In(entity): In<Entity>, finished: Query<(), With<PrepareFinished>>) -> bool {
+    finished.get(entity).is_ok()
+}
+
+fn has_boot_finished(In(entity): In<Entity>, finished: Query<(), With<BootFinished>>) -> bool {
+    finished.get(entity).is_ok()
+}
+
+fn has_guest_connected(In(entity): In<Entity>, finished: Query<(), With<GuestConnected>>) -> bool {
+    finished.get(entity).is_ok()
+}
+
+fn has_provision_finished(
+    In(entity): In<Entity>,
+    finished: Query<(), With<ProvisionFinished>>,
+) -> bool {
+    finished.get(entity).is_ok()
+}
+
+fn has_shutdown_finished(
+    In(entity): In<Entity>,
+    finished: Query<(), With<ShutdownFinished>>,
+) -> bool {
+    finished.get(entity).is_ok()
+}
+
+fn has_error(In(entity): In<Entity>, errors: Query<(), With<EntityError>>) -> bool {
+    errors.get(entity).is_ok()
+}
+
 fn shutdown_requested(In(_entity): In<Entity>, shutdown: Res<ShutdownRequested>) -> bool {
     shutdown.0
 }
@@ -98,17 +153,17 @@ pub fn build_instance_sm<D: OrchestrationDriver>() -> StateMachine {
         .trans::<Recovering, _>(needs_boot::<D>, Booting)
         .trans::<Recovering, _>(needs_guest_connect::<D>, ConnectingGuest)
         .trans::<Recovering, _>(failed_recovery::<D>, Failed)
-        .trans::<Preparing, _>(done(Some(Done::Success)), Booting)
-        .trans::<Preparing, _>(done(Some(Done::Failure)), Failed)
-        .trans::<Booting, _>(done(Some(Done::Success)), ConnectingGuest)
-        .trans::<Booting, _>(done(Some(Done::Failure)), Failed)
-        .trans::<ConnectingGuest, _>(done(Some(Done::Success)), Provisioning)
-        .trans::<ConnectingGuest, _>(done(Some(Done::Failure)), Failed)
-        .trans::<Provisioning, _>(done(Some(Done::Success)), Running)
-        .trans::<Provisioning, _>(done(Some(Done::Failure)), Failed)
+        .trans::<Preparing, _>(has_prepare_finished, Booting)
+        .trans::<Preparing, _>(has_error, Failed)
+        .trans::<Booting, _>(has_boot_finished, ConnectingGuest)
+        .trans::<Booting, _>(has_error, Failed)
+        .trans::<ConnectingGuest, _>(has_guest_connected, Provisioning)
+        .trans::<ConnectingGuest, _>(has_error, Failed)
+        .trans::<Provisioning, _>(has_provision_finished, Running)
+        .trans::<Provisioning, _>(has_error, Failed)
         .trans::<Running, _>(shutdown_requested, ShuttingDown)
-        .trans::<ShuttingDown, _>(done(Some(Done::Success)), Stopped)
-        .trans::<ShuttingDown, _>(done(Some(Done::Failure)), Failed)
+        .trans::<ShuttingDown, _>(has_shutdown_finished, Stopped)
+        .trans::<ShuttingDown, _>(has_error, Failed)
         .set_trans_logging(true)
 }
 
@@ -143,7 +198,7 @@ fn on_preparing<D: OrchestrationDriver>(
         return;
     };
     let Ok(image) = images.get(entity) else {
-        commands.send_msg(OrchestratorMessage::MarkFailed {
+        commands.send_msg(OrchestratorMessage::OperationFailed {
             entity,
             message: "missing resolved base image".into(),
         });
@@ -154,8 +209,8 @@ fn on_preparing<D: OrchestrationDriver>(
     let image_path = image.0.clone();
     commands.entity(entity).spawn_task(move |task| async move {
         match driver.prepare(&image_path).await {
-            Ok(()) => task.send_msg(OrchestratorMessage::MarkDone { entity }),
-            Err(error) => task.send_msg(OrchestratorMessage::MarkFailed {
+            Ok(()) => task.send_msg(OrchestratorMessage::PrepareFinished { entity }),
+            Err(error) => task.send_msg(OrchestratorMessage::OperationFailed {
                 entity,
                 message: error.to_string(),
             }),
@@ -176,8 +231,8 @@ fn on_booting<D: OrchestrationDriver>(
     let driver = instance.0.driver();
     commands.entity(entity).spawn_task(move |task| async move {
         match driver.boot().await {
-            Ok(_) => task.send_msg(OrchestratorMessage::MarkDone { entity }),
-            Err(error) => task.send_msg(OrchestratorMessage::MarkFailed {
+            Ok(_) => task.send_msg(OrchestratorMessage::BootFinished { entity }),
+            Err(error) => task.send_msg(OrchestratorMessage::OperationFailed {
                 entity,
                 message: error.to_string(),
             }),
@@ -198,8 +253,8 @@ fn on_connecting_guest<D: OrchestrationDriver>(
     let driver = instance.0.driver();
     commands.entity(entity).spawn_task(move |task| async move {
         match driver.connect_guest().await {
-            Ok(()) => task.send_msg(OrchestratorMessage::MarkDone { entity }),
-            Err(error) => task.send_msg(OrchestratorMessage::MarkFailed {
+            Ok(()) => task.send_msg(OrchestratorMessage::GuestConnected { entity }),
+            Err(error) => task.send_msg(OrchestratorMessage::OperationFailed {
                 entity,
                 message: error.to_string(),
             }),
@@ -228,8 +283,8 @@ fn on_provisioning<D: OrchestrationDriver>(
     let driver = instance.0.driver();
     commands.entity(entity).spawn_task(move |task| async move {
         match driver.provision(scripts).await {
-            Ok(()) => task.send_msg(OrchestratorMessage::MarkDone { entity }),
-            Err(error) => task.send_msg(OrchestratorMessage::MarkFailed {
+            Ok(()) => task.send_msg(OrchestratorMessage::ProvisionFinished { entity }),
+            Err(error) => task.send_msg(OrchestratorMessage::OperationFailed {
                 entity,
                 message: error.to_string(),
             }),
@@ -250,8 +305,8 @@ fn on_shutting_down<D: OrchestrationDriver>(
     let driver = instance.0.driver();
     commands.entity(entity).spawn_task(move |task| async move {
         match driver.shutdown().await {
-            Ok(()) => task.send_msg(OrchestratorMessage::MarkDone { entity }),
-            Err(error) => task.send_msg(OrchestratorMessage::MarkFailed {
+            Ok(()) => task.send_msg(OrchestratorMessage::ShutdownFinished { entity }),
+            Err(error) => task.send_msg(OrchestratorMessage::OperationFailed {
                 entity,
                 message: error.to_string(),
             }),
@@ -296,7 +351,7 @@ mod tests {
     use crate::driver::OrchestrationDriver;
     use crate::instance::{
         ManagedInstance, RecoveredState, ResolvedBaseImage,
-        instance_phase::{Booting, ConnectingGuest, Preparing, Provisioning, Running, ShuttingDown, Stopped},
+        instance_phase::{Preparing, Running, Stopped},
     };
 
     #[derive(Clone)]
@@ -374,6 +429,21 @@ mod tests {
         app
     }
 
+    fn advance_until(
+        app: &mut App,
+        entity: Entity,
+        predicate: impl Fn(&World, Entity) -> bool,
+    ) {
+        for _ in 0..16 {
+            if predicate(app.world(), entity) {
+                return;
+            }
+            app.update();
+        }
+
+        assert!(predicate(app.world(), entity), "predicate was never satisfied");
+    }
+
     #[test]
     fn recovering_missing_records_recovered_state() {
         let mut app = test_app();
@@ -417,31 +487,19 @@ mod tests {
             Some(machine::instance::InstanceState::Missing)
         );
 
+        advance_until(&mut app, entity, |world, entity| world.get::<Preparing>(entity).is_some());
+        OrchestratorMessage::PrepareFinished { entity }.apply(app.world_mut());
         app.update();
-        assert!(app.world().get::<Preparing>(entity).is_some());
-
-        app.world_mut().entity_mut(entity).insert(Done::Success);
+        OrchestratorMessage::BootFinished { entity }.apply(app.world_mut());
         app.update();
-        assert!(app.world().get::<Booting>(entity).is_some());
-
-        app.world_mut().entity_mut(entity).insert(Done::Success);
+        OrchestratorMessage::GuestConnected { entity }.apply(app.world_mut());
         app.update();
-        assert!(app.world().get::<ConnectingGuest>(entity).is_some());
-
-        app.world_mut().entity_mut(entity).insert(Done::Success);
-        app.update();
-        assert!(app.world().get::<Provisioning>(entity).is_some());
-
-        app.world_mut().entity_mut(entity).insert(Done::Success);
-        app.update();
-        assert!(app.world().get::<Running>(entity).is_some());
+        OrchestratorMessage::ProvisionFinished { entity }.apply(app.world_mut());
+        advance_until(&mut app, entity, |world, entity| world.get::<Running>(entity).is_some());
 
         app.world_mut().resource_mut::<ShutdownRequested>().0 = true;
         app.update();
-        assert!(app.world().get::<ShuttingDown>(entity).is_some());
-
-        app.world_mut().entity_mut(entity).insert(Done::Success);
-        app.update();
-        assert!(app.world().get::<Stopped>(entity).is_some());
+        OrchestratorMessage::ShutdownFinished { entity }.apply(app.world_mut());
+        advance_until(&mut app, entity, |world, entity| world.get::<Stopped>(entity).is_some());
     }
 }

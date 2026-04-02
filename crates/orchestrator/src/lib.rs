@@ -4,7 +4,8 @@ pub mod lifecycle;
 
 pub use driver::OrchestrationDriver;
 pub use instance::{
-    BackendDriver, EntityError, InstancePhase, ManagedInstance, OrchestratorPhase, ProvisionPlan,
-    RecoveredState, ResolvedBaseImage,
+    BackendDriver, BootFinished, EntityError, GuestConnected, InstancePhase, ManagedInstance,
+    OrchestratorPhase, PrepareFinished, ProvisionFinished, ProvisionPlan, RecoveredState,
+    ResolvedBaseImage, ShutdownFinished,
 };
 pub use lifecycle::{OrchestratorMessage, OrchestratorPlugin, ShutdownRequested, build_instance_sm};
