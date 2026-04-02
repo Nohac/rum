@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/cli",
     "crates/guest",
     "crates/domain",
     "crates/machine",
@@ -12,6 +13,7 @@ resolver = "2"
 guest = { path = "crates/guest", artifact = "bin", lib = true, target = "x86_64-unknown-linux-musl" }
 domain = { path = "crates/domain" }
 machine = { path = "crates/machine" }
+orchestrator = { path = "crates/orchestrator" }
 
 async-trait = "0.1"
 bevy = { version = "0.18", default-features = false, features = ["multi_threaded", "bevy_state"] }
