@@ -74,5 +74,11 @@ pub enum OrchestratorPhase {
 /// Marker component that carries the concrete driver type into the ECS world.
 ///
 /// This is useful when spawning orchestration entities from bootstrap code.
-#[derive(Component, Default, Deref)]
+#[derive(Component, Deref)]
 pub struct BackendDriver<D: OrchestrationDriver>(pub PhantomData<D>);
+
+impl<D: OrchestrationDriver> Default for BackendDriver<D> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}

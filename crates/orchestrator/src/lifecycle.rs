@@ -349,10 +349,8 @@ mod tests {
 
     use super::*;
     use crate::driver::OrchestrationDriver;
-    use crate::instance::{
-        ManagedInstance, RecoveredState, ResolvedBaseImage,
-        instance_phase::{Preparing, Running, Stopped},
-    };
+    use crate::instance::{RecoveredState, instance_phase::{Preparing, Running, Stopped}};
+    use crate::setup::{ManagedInstanceSpec, spawn_managed_instance};
 
     #[derive(Clone)]
     struct MockDriver {
@@ -447,14 +445,13 @@ mod tests {
     #[test]
     fn recovering_missing_records_recovered_state() {
         let mut app = test_app();
-        let entity = app.world_mut().spawn((
-            ManagedInstance(machine::instance::Instance::new_with_driver(
+        let entity = spawn_managed_instance(
+            app.world_mut(),
+            ManagedInstanceSpec::new(machine::instance::Instance::new_with_driver(
                 MockDriver::new(machine::instance::InstanceState::Missing),
                 machine::instance::BackendKind::Libvirt,
             )),
-            build_instance_sm::<MockDriver>(),
-            Recovering,
-        )).id();
+        );
 
         app.update();
 
@@ -467,19 +464,15 @@ mod tests {
     #[test]
     fn missing_instance_reaches_stopped_end_state() {
         let mut app = test_app();
-        let entity = app
-            .world_mut()
-            .spawn((
-                ManagedInstance(machine::instance::Instance::new_with_driver(
-                    MockDriver::new(machine::instance::InstanceState::Missing),
-                    machine::instance::BackendKind::Libvirt,
-                )),
-                ResolvedBaseImage("/tmp/mock-image.qcow2".into()),
-                ProvisionPlan::default(),
-                build_instance_sm::<MockDriver>(),
-                Recovering,
+        let entity = spawn_managed_instance(
+            app.world_mut(),
+            ManagedInstanceSpec::new(machine::instance::Instance::new_with_driver(
+                MockDriver::new(machine::instance::InstanceState::Missing),
+                machine::instance::BackendKind::Libvirt,
             ))
-            .id();
+            .with_resolved_base_image("/tmp/mock-image.qcow2")
+            .with_provision_plan(Vec::new()),
+        );
 
         app.update();
         assert_eq!(
