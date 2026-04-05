@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use bevy::prelude::Deref;
 use ecsdk::prelude::*;
 use guest::agent::ProvisionScript;
+use serde::{Deserialize, Serialize};
 
 use crate::driver::OrchestrationDriver;
 
@@ -12,7 +13,7 @@ use crate::driver::OrchestrationDriver;
 pub struct ManagedInstance<D: OrchestrationDriver>(pub machine::instance::Instance<D>);
 
 /// Component that carries the recovered persistent/runtime state for an entity.
-#[derive(Component, Clone, Copy, PartialEq, Eq, Debug, Deref)]
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug, Deref, Serialize, Deserialize)]
 pub struct RecoveredState(pub machine::instance::InstanceState);
 
 /// Resolved base image path used by the prepare step.
@@ -24,7 +25,7 @@ pub struct ResolvedBaseImage(pub PathBuf);
 pub struct ProvisionPlan(pub Vec<ProvisionScript>);
 
 /// Recorded orchestration error for an entity.
-#[derive(Component, Clone, Debug, Deref)]
+#[derive(Component, Clone, Debug, Deref, Serialize, Deserialize)]
 pub struct EntityError(pub String);
 
 /// Marker inserted once the prepare step has completed successfully.
@@ -48,7 +49,7 @@ pub struct ProvisionFinished;
 pub struct ShutdownFinished;
 
 /// Per-entity lifecycle phase driven by the orchestrator state machine.
-#[derive(Component, StateComponent, PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(Component, StateComponent, PartialEq, Eq, Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum InstancePhase {
     Recovering,
     Preparing,
@@ -62,7 +63,7 @@ pub enum InstancePhase {
 }
 
 /// Top-level orchestration phase for the app as a whole.
-#[derive(Component, StateComponent, PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(Component, StateComponent, PartialEq, Eq, Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum OrchestratorPhase {
     Starting,
     Running,

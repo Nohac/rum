@@ -2,9 +2,10 @@ use crate::config::SystemConfig;
 use crate::driver::{Driver, LibvirtDriver, RecoverableDriver};
 use crate::error::Error;
 use crate::layout::MachineLayout;
+use serde::{Deserialize, Serialize};
 
 /// Selected runtime backend for an instance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BackendKind {
     Libvirt,
 }
@@ -14,7 +15,7 @@ pub enum BackendKind {
 /// The state is instance-owned rather than driver-owned because it is derived
 /// from both backend state and on-disk artifacts such as overlays, seed ISOs,
 /// and provision markers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InstanceState {
     Missing,
     ImageCached,

@@ -17,6 +17,7 @@ orchestrator = { path = "crates/orchestrator" }
 
 async-trait = "0.1"
 bevy = { version = "0.18", default-features = false, features = ["multi_threaded", "bevy_state"] }
+clap = { version = "4", features = ["derive"] }
 dirs = "6"
 ecsdk = { git = "https://github.com/Nohac/ecsdk", features = ["app", "tasks", "network", "macros"] }
 facet = "0.43"
@@ -26,6 +27,7 @@ facet-xml = "0.43"
 facet-yaml = "0.43"
 futures-util = "0.3"
 indicatif = "0.17"
+interprocess = { version = "2", features = ["tokio"] }
 miette = "7"
 rand_core = "0.6"
 roam = "0.6"

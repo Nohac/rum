@@ -3,13 +3,21 @@ name = "cli"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "rum"
+path = "src/main.rs"
+
 [dependencies]
 guest.workspace = true
 machine.workspace = true
 orchestrator.workspace = true
 
 async-trait.workspace = true
+bevy.workspace = true
+clap.workspace = true
 ecsdk.workspace = true
+interprocess.workspace = true
+tokio = { workspace = true, features = ["process", "rt-multi-thread", "signal", "time"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
