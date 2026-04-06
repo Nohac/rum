@@ -27,6 +27,7 @@ rand_core = { workspace = true, features = ["getrandom"] }
 tokio-vsock.workspace = true
 roam.workspace = true
 roam-stream.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

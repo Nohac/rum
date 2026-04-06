@@ -2,26 +2,21 @@ use ecsdk::app::AsyncApp;
 use ecsdk::prelude::*;
 use ecsdk::network::{IsomorphicApp, IsomorphicPlugin};
 use orchestrator::instance::instance_phase::{
-    Booting, ConnectingGuest, Failed, Preparing, Provisioning, Recovering, Running, ShuttingDown,
-    Stopped,
+    Failed, Running, Stopped,
 };
 use orchestrator::{EntityError, OrchestratorMessage};
 
+use crate::render::{RenderMode, RumRenderPlugin};
+
 /// Client-side observers for the first plain `rum up` flow.
 ///
-/// The initial client is intentionally minimal: it prints replicated phase
-/// changes and exits once the machine reaches a terminal or ready state.
+/// The initial client stays small: rendering is delegated to a renderer plugin,
+/// while the client plugin owns only exit conditions and connection behavior.
 pub struct RumClientPlugin;
 
 impl Plugin for RumClientPlugin {
     fn build(&self, app: &mut App) {
-        app.add_observer(on_recovering);
-        app.add_observer(on_preparing);
-        app.add_observer(on_booting);
-        app.add_observer(on_connecting_guest);
-        app.add_observer(on_provisioning);
         app.add_observer(on_running);
-        app.add_observer(on_shutting_down);
         app.add_observer(on_stopped);
         app.add_observer(on_failed);
         app.add_systems(Update, on_server_disconnect);
@@ -36,12 +31,17 @@ impl IsomorphicPlugin for ClientOnlyPlugin {
     }
 }
 
-/// Build the plain client app used by the initial `rum up` command.
-pub fn build_up_client(socket_path: std::path::PathBuf) -> AsyncApp<OrchestratorMessage> {
+/// Build the client app used by the initial `rum up` command.
+pub fn build_up_client(
+    socket_path: std::path::PathBuf,
+    render_mode: RenderMode,
+) -> AsyncApp<OrchestratorMessage> {
     let mut iso = IsomorphicApp::<OrchestratorMessage>::new();
     iso.add_plugin(crate::network::SharedNetworkPlugin::new(socket_path));
     iso.add_plugin(ClientOnlyPlugin);
-    iso.build_client()
+    let mut app = iso.build_client();
+    app.add_plugins(RumRenderPlugin::new(render_mode));
+    app
 }
 
 fn on_server_disconnect(
@@ -49,45 +49,18 @@ fn on_server_disconnect(
     mut exit: MessageWriter<AppExit>,
 ) {
     if disconnects.read().next().is_some() {
+        tracing::info!("rum daemon disconnected");
         exit.write(AppExit::Success);
     }
 }
 
-fn print_phase(label: &str) {
-    println!("{label}");
-}
-
-fn on_recovering(_trigger: On<Add, Recovering>) {
-    print_phase("recovering instance state");
-}
-
-fn on_preparing(_trigger: On<Add, Preparing>) {
-    print_phase("preparing machine");
-}
-
-fn on_booting(_trigger: On<Add, Booting>) {
-    print_phase("booting machine");
-}
-
-fn on_connecting_guest(_trigger: On<Add, ConnectingGuest>) {
-    print_phase("connecting to guest");
-}
-
-fn on_provisioning(_trigger: On<Add, Provisioning>) {
-    print_phase("running provisioning");
-}
-
 fn on_running(_trigger: On<Add, Running>, mut exit: MessageWriter<AppExit>) {
-    print_phase("machine is running");
+    tracing::info!("managed instance reached running state");
     exit.write(AppExit::Success);
 }
 
-fn on_shutting_down(_trigger: On<Add, ShuttingDown>) {
-    print_phase("shutting down");
-}
-
 fn on_stopped(_trigger: On<Add, Stopped>, mut exit: MessageWriter<AppExit>) {
-    print_phase("machine stopped");
+    tracing::info!("managed instance reached stopped state");
     exit.write(AppExit::Success);
 }
 
@@ -98,9 +71,9 @@ fn on_failed(
 ) {
     let entity = trigger.event_target();
     if let Ok(error) = errors.get(entity) {
-        eprintln!("machine failed: {}", error.0);
+        tracing::error!(entity = entity.index().index(), error = %error.0, "managed instance failed");
     } else {
-        eprintln!("machine failed");
+        tracing::error!(entity = entity.index().index(), "managed instance failed");
     }
     exit.write(AppExit::Success);
 }

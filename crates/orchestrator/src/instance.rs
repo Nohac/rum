@@ -16,6 +16,10 @@ pub struct ManagedInstance<D: OrchestrationDriver>(pub machine::instance::Instan
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug, Deref, Serialize, Deserialize)]
 pub struct RecoveredState(pub machine::instance::InstanceState);
 
+/// Human-facing label for one managed instance entity.
+#[derive(Component, Clone, Debug, Deref, Serialize, Deserialize)]
+pub struct InstanceLabel(pub String);
+
 /// Resolved base image path used by the prepare step.
 #[derive(Component, Clone, Debug, Deref)]
 pub struct ResolvedBaseImage(pub PathBuf);
@@ -60,6 +64,23 @@ pub enum InstancePhase {
     ShuttingDown,
     Stopped,
     Failed,
+}
+
+impl InstancePhase {
+    /// Plain-text label for the current lifecycle phase.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Recovering => "Recovering",
+            Self::Preparing => "Preparing",
+            Self::Booting => "Booting",
+            Self::ConnectingGuest => "Connecting guest",
+            Self::Provisioning => "Provisioning",
+            Self::Running => "Running",
+            Self::ShuttingDown => "Shutting down",
+            Self::Stopped => "Stopped",
+            Self::Failed => "Failed",
+        }
+    }
 }
 
 /// Top-level orchestration phase for the app as a whole.

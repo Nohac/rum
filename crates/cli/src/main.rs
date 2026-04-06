@@ -3,6 +3,9 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use machine::config::load_config;
+use cli::render::RenderMode;
+use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
 
 #[derive(Parser)]
 #[command(name = "rum")]
@@ -11,6 +14,10 @@ struct Cli {
     /// Run in daemon mode instead of attaching as a client.
     #[arg(short, long)]
     daemon: bool,
+
+    /// Output mode for the attached client.
+    #[arg(long, value_enum, default_value_t = RenderMode::Plain)]
+    output: RenderMode,
 
     #[command(subcommand)]
     command: Command,
@@ -28,23 +35,37 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    init_tracing();
     let cli = Cli::parse();
 
     match cli.command {
         Command::Up { config } if cli.daemon => run_daemon(&config).await?,
-        Command::Up { config } => run_up(&config).await?,
+        Command::Up { config } => run_up(&config, cli.output).await?,
     }
 
     Ok(())
 }
 
-async fn run_up(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn init_tracing() {
+    let _ = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_target(false),
+        )
+        .try_init();
+}
+
+async fn run_up(
+    config_path: &Path,
+    render_mode: RenderMode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let system = load_config(config_path)?;
     let socket_path = cli::ipc::socket_path(&system);
 
     ensure_daemon(config_path, &socket_path).await?;
 
-    let app = cli::client::build_up_client(socket_path);
+    let app = cli::client::build_up_client(socket_path, render_mode);
     app.run().await;
     Ok(())
 }

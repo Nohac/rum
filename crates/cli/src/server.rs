@@ -23,6 +23,7 @@ pub struct ServerSpec {
 /// Resolve config and startup inputs for a single `rum up` daemon.
 pub async fn load_server_spec(config_path: &Path) -> Result<ServerSpec, Error> {
     let system = load_config(config_path)?;
+    let display_name = system.display_name().to_string();
     let instance = Instance::new(system.clone());
     let base_image = ensure_base_image(&system.config.image.base, &paths::cache_dir()).await?;
     let socket_path = crate::ipc::socket_path(&system);
@@ -32,6 +33,7 @@ pub async fn load_server_spec(config_path: &Path) -> Result<ServerSpec, Error> {
         system,
         socket_path,
         managed_instance: ManagedInstanceSpec::new(instance)
+            .with_label(display_name)
             .with_resolved_base_image(base_image)
             .with_provision_plan(provision_plan),
     })

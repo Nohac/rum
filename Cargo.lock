@@ -1225,6 +1225,8 @@ dependencies = [
  "machine",
  "orchestrator",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

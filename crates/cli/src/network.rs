@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use ecsdk::prelude::*;
 use ecsdk::tasks::SpawnTask;
 use interprocess::local_socket::traits::tokio::Listener as _;
-use orchestrator::{EntityError, InstancePhase, OrchestratorPhase, RecoveredState};
+use orchestrator::{EntityError, InstanceLabel, InstancePhase, OrchestratorPhase, RecoveredState};
 
 /// Socket path shared by the local daemon/client pair.
 #[derive(Resource, Clone)]
@@ -30,6 +30,7 @@ impl IsomorphicPlugin for SharedNetworkPlugin {
         app.insert_resource(SocketPath(self.socket_path.clone()));
         app.replicate::<RecoveredState>();
         app.replicate::<EntityError>();
+        app.replicate::<InstanceLabel>();
         InstancePhase::replicate_markers(app);
         OrchestratorPhase::replicate_markers(app);
     }
@@ -48,15 +49,18 @@ fn spawn_server_listener(mut commands: Commands, socket_path: Res<SocketPath>) {
     commands.spawn_empty().spawn_task(move |task| async move {
         let listener =
             crate::ipc::create_listener(&socket_path).expect("failed to bind rum socket");
+        tracing::info!(socket = %socket_path.display(), "rum daemon listening");
 
         loop {
             let stream = match listener.accept().await {
                 Ok(stream) => stream,
                 Err(error) => {
-                    eprintln!("failed to accept client connection: {error}");
+                    tracing::warn!(%error, "failed to accept client connection");
                     continue;
                 }
             };
+
+            tracing::info!("accepted client connection");
 
             task.queue_cmd_wake(move |world: &mut World| {
                 ecsdk::network::AcceptClientCmd { stream }.apply(world);
@@ -68,14 +72,16 @@ fn spawn_server_listener(mut commands: Commands, socket_path: Res<SocketPath>) {
 fn spawn_client_connection(mut commands: Commands, socket_path: Res<SocketPath>) {
     let socket_path = socket_path.0.clone();
     commands.spawn_empty().spawn_task(move |task| async move {
+        tracing::info!(socket = %socket_path.display(), "connecting to rum daemon");
         match crate::ipc::connect(&socket_path).await {
             Ok(stream) => {
+                tracing::info!("connected to rum daemon");
                 task.queue_cmd_wake(move |world: &mut World| {
                     ecsdk::network::ConnectClientCmd { stream }.apply(world);
                 });
             }
             Err(error) => {
-                eprintln!("failed to connect to rum daemon: {error}");
+                tracing::warn!(%error, socket = %socket_path.display(), "failed to connect to rum daemon");
                 task.queue_cmd_wake(|world: &mut World| {
                     world.write_message(AppExit::Success);
                 });

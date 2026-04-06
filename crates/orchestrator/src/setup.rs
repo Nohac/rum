@@ -5,7 +5,8 @@ use guest::agent::ProvisionScript;
 
 use crate::driver::OrchestrationDriver;
 use crate::instance::{
-    BackendDriver, ManagedInstance, ProvisionPlan, ResolvedBaseImage, instance_phase::Recovering,
+    BackendDriver, InstanceLabel, ManagedInstance, ProvisionPlan, ResolvedBaseImage,
+    instance_phase::Recovering,
 };
 use crate::lifecycle::build_instance_sm;
 
@@ -16,6 +17,7 @@ use crate::lifecycle::build_instance_sm;
 /// image path and provisioning plan.
 pub struct ManagedInstanceSpec<D: OrchestrationDriver> {
     instance: machine::instance::Instance<D>,
+    label: Option<String>,
     resolved_base_image: Option<PathBuf>,
     provision_plan: Vec<ProvisionScript>,
 }
@@ -25,9 +27,17 @@ impl<D: OrchestrationDriver> ManagedInstanceSpec<D> {
     pub fn new(instance: machine::instance::Instance<D>) -> Self {
         Self {
             instance,
+            label: None,
             resolved_base_image: None,
             provision_plan: Vec::new(),
         }
+    }
+
+    /// Attach the human-facing label that renderers should show for this
+    /// managed instance.
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
     }
 
     /// Attach the base image path that the prepare step should consume.
@@ -53,12 +63,17 @@ pub fn spawn_managed_instance<D: OrchestrationDriver>(
     spec: ManagedInstanceSpec<D>,
 ) -> Entity {
     let mut entity = world.spawn((
+        Replicated,
         ManagedInstance(spec.instance),
         BackendDriver::<D>::default(),
         ProvisionPlan(spec.provision_plan),
         build_instance_sm::<D>(),
         Recovering,
     ));
+
+    if let Some(label) = spec.label {
+        entity.insert(InstanceLabel(label));
+    }
 
     if let Some(image) = spec.resolved_base_image {
         entity.insert(ResolvedBaseImage(image));
