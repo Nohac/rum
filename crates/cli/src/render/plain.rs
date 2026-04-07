@@ -37,7 +37,7 @@ pub(super) fn render_plain(
         if let Some(recovered) = recovered {
             let recovered_state = **recovered;
             if state.last_recovered.get(&entity) != Some(&recovered_state) {
-                println!("{label}: recovered state = {:?}", recovered_state);
+                println!("{label}: recovered state = {recovered_state}");
                 state.last_recovered.insert(entity, recovered_state);
             }
         }

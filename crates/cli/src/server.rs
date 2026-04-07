@@ -1,13 +1,13 @@
 use std::path::{Path, PathBuf};
 
 use ecsdk::app::AsyncApp;
-use ecsdk::network::IsomorphicApp;
+use ecsdk::network::{IsomorphicApp, IsomorphicAppExt};
 use machine::config::{SystemConfig, load_config};
 use machine::driver::LibvirtDriver;
 use machine::image::ensure_base_image;
 use machine::instance::Instance;
 use machine::{error::Error, paths};
-use orchestrator::{ManagedInstanceSpec, OrchestratorMessage};
+use orchestrator::{ManagedInstanceSpec, OrchestratorMessage, OrchestratorPlugin, spawn_managed_instance};
 
 /// Server bootstrap inputs resolved before the daemon starts.
 ///
@@ -44,7 +44,8 @@ pub fn build_up_server(spec: ServerSpec) -> AsyncApp<OrchestratorMessage> {
     let mut iso = IsomorphicApp::<OrchestratorMessage>::new();
     iso.add_plugin(crate::network::SharedNetworkPlugin::new(spec.socket_path));
     let mut app = iso.build_server();
-    crate::bootstrap::bootstrap_instance(&mut app, spec.managed_instance);
+    app.add_shared_plugin(OrchestratorPlugin::<LibvirtDriver>::default());
+    spawn_managed_instance(app.world_mut(), spec.managed_instance);
     app
 }
 

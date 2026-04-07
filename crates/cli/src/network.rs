@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use ecsdk::prelude::*;
 use ecsdk::tasks::SpawnTask;
 use interprocess::local_socket::traits::tokio::Listener as _;
-use orchestrator::{EntityError, InstanceLabel, InstancePhase, OrchestratorPhase, RecoveredState};
+use orchestrator::{EntityError, InstanceLabel, InstancePhase, RecoveredState};
 
 /// Socket path shared by the local daemon/client pair.
 #[derive(Resource, Clone)]
@@ -32,7 +32,6 @@ impl IsomorphicPlugin for SharedNetworkPlugin {
         app.replicate::<EntityError>();
         app.replicate::<InstanceLabel>();
         InstancePhase::replicate_markers(app);
-        OrchestratorPhase::replicate_markers(app);
     }
 
     fn build_server(&self, app: &mut App) {

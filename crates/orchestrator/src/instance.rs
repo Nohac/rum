@@ -1,4 +1,3 @@
-use std::marker::PhantomData;
 use std::path::PathBuf;
 
 use bevy::prelude::Deref;
@@ -80,27 +79,5 @@ impl InstancePhase {
             Self::Stopped => "Stopped",
             Self::Failed => "Failed",
         }
-    }
-}
-
-/// Top-level orchestration phase for the app as a whole.
-#[derive(Component, StateComponent, PartialEq, Eq, Clone, Copy, Debug, Serialize, Deserialize)]
-pub enum OrchestratorPhase {
-    Starting,
-    Running,
-    ShuttingDown,
-    Stopped,
-    Failed,
-}
-
-/// Marker component that carries the concrete driver type into the ECS world.
-///
-/// This is useful when spawning orchestration entities from bootstrap code.
-#[derive(Component, Deref)]
-pub struct BackendDriver<D: OrchestrationDriver>(pub PhantomData<D>);
-
-impl<D: OrchestrationDriver> Default for BackendDriver<D> {
-    fn default() -> Self {
-        Self(PhantomData)
     }
 }

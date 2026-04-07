@@ -76,8 +76,6 @@ impl LibvirtDriver {
             });
         }
 
-        drop(conn);
-
         let ssh_config = &self.system.config.ssh;
         let cmd_parts: Vec<&str> = ssh_config.command.split_whitespace().collect();
         let program = cmd_parts[0];

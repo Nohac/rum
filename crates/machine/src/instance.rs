@@ -3,6 +3,7 @@ use crate::driver::{Driver, LibvirtDriver, RecoverableDriver};
 use crate::error::Error;
 use crate::layout::MachineLayout;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// Selected runtime backend for an instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,6 +25,21 @@ pub enum InstanceState {
     Stopped,
     Running,
     StaleConfig,
+}
+
+impl fmt::Display for InstanceState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::Missing => "Missing",
+            Self::ImageCached => "Image cached",
+            Self::Prepared => "Prepared",
+            Self::PartialBoot => "Partial boot",
+            Self::Stopped => "Stopped",
+            Self::Running => "Running",
+            Self::StaleConfig => "Stale config",
+        };
+        f.write_str(label)
+    }
 }
 
 /// Persistent instance view used by higher-level orchestration.
