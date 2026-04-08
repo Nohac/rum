@@ -1224,6 +1224,7 @@ dependencies = [
  "interprocess",
  "machine",
  "orchestrator",
+ "serde",
  "tokio",
  "tracing",
  "tracing-subscriber",

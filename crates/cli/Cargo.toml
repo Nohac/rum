@@ -17,6 +17,7 @@ bevy.workspace = true
 clap.workspace = true
 ecsdk.workspace = true
 interprocess.workspace = true
+serde.workspace = true
 tokio = { workspace = true, features = ["process", "rt-multi-thread", "signal", "time"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true

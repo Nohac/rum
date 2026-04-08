@@ -1,6 +1,6 @@
 use ecsdk::app::AsyncApp;
+use ecsdk::network::IsomorphicPlugin;
 use ecsdk::prelude::*;
-use ecsdk::network::{IsomorphicApp, IsomorphicPlugin};
 use orchestrator::instance::instance_phase::{
     Failed, Running, Stopped,
 };
@@ -36,8 +36,7 @@ pub fn build_up_client(
     socket_path: std::path::PathBuf,
     render_mode: RenderMode,
 ) -> AsyncApp<OrchestratorMessage> {
-    let mut iso = IsomorphicApp::<OrchestratorMessage>::new();
-    iso.add_plugin(crate::network::SharedNetworkPlugin::new(socket_path));
+    let mut iso = crate::app::create_isomorphic_app(socket_path);
     iso.add_plugin(ClientOnlyPlugin);
     let mut app = iso.build_client();
     app.add_plugins(RumRenderPlugin::new(render_mode));

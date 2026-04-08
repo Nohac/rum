@@ -31,6 +31,12 @@ enum Command {
         #[arg(default_value = "rum.toml")]
         config: PathBuf,
     },
+    /// Ask the daemon to shut down the current machine.
+    Down {
+        /// Path to the rum config file.
+        #[arg(default_value = "rum.toml")]
+        config: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -41,6 +47,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Command::Up { config } if cli.daemon => run_daemon(&config).await?,
         Command::Up { config } => run_up(&config, cli.output).await?,
+        Command::Down { .. } if cli.daemon => {
+            return Err("--daemon only supports `rum up`".into());
+        }
+        Command::Down { config } => run_down(&config, cli.output).await?,
     }
 
     Ok(())
@@ -76,6 +86,23 @@ async fn run_daemon(config_path: &Path) -> Result<(), Box<dyn std::error::Error>
     let app = cli::server::build_up_server(spec);
     app.run().await;
     let _ = std::fs::remove_file(socket_path);
+    Ok(())
+}
+
+async fn run_down(
+    config_path: &Path,
+    render_mode: RenderMode,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let system = load_config(config_path)?;
+    let socket_path = cli::ipc::socket_path(&system);
+
+    if cli::ipc::connect(&socket_path).await.is_err() {
+        tracing::info!(socket = %socket_path.display(), "no rum daemon is running");
+        return Ok(());
+    }
+
+    let app = cli::down::build_down_client(socket_path, render_mode);
+    app.run().await;
     Ok(())
 }
 
