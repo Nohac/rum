@@ -10,5 +10,6 @@ pub fn create_isomorphic_app(socket_path: std::path::PathBuf) -> IsomorphicApp<O
     let mut iso = IsomorphicApp::new();
     iso.add_plugin(crate::network::SharedNetworkPlugin::new(socket_path));
     iso.add_plugin(crate::down::DownFeature);
+    iso.add_plugin(crate::status::StatusFeature);
     iso
 }

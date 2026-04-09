@@ -37,6 +37,12 @@ enum Command {
         #[arg(default_value = "rum.toml")]
         config: PathBuf,
     },
+    /// Query the daemon for the current machine status.
+    Status {
+        /// Path to the rum config file.
+        #[arg(default_value = "rum.toml")]
+        config: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -51,6 +57,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("--daemon only supports `rum up`".into());
         }
         Command::Down { config } => run_down(&config, cli.output).await?,
+        Command::Status { .. } if cli.daemon => {
+            return Err("--daemon only supports `rum up`".into());
+        }
+        Command::Status { config } => run_status(&config).await?,
     }
 
     Ok(())
@@ -102,6 +112,20 @@ async fn run_down(
     }
 
     let app = cli::down::build_down_client(socket_path, render_mode);
+    app.run().await;
+    Ok(())
+}
+
+async fn run_status(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let system = load_config(config_path)?;
+    let socket_path = cli::ipc::socket_path(&system);
+
+    if cli::ipc::connect(&socket_path).await.is_err() {
+        println!("no rum daemon is running");
+        return Ok(());
+    }
+
+    let app = cli::status::build_status_client(socket_path);
     app.run().await;
     Ok(())
 }
