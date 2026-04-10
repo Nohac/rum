@@ -1,3 +1,5 @@
+work in progress!
+
 # rum
 
 A lightweight CLI tool for provisioning and running single VM instances via libvirt.
