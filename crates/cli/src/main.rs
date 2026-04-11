@@ -42,6 +42,14 @@ enum Command {
         /// Path to the rum config file.
         #[arg(default_value = "rum.toml")]
         config: PathBuf,
+
+        /// Keep the status client attached and render live updates.
+        #[arg(long)]
+        watch: bool,
+
+        /// Stay attached until the instance reaches running or a terminal state.
+        #[arg(long)]
+        wait_ready: bool,
     },
 }
 
@@ -60,7 +68,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Status { .. } if cli.daemon => {
             return Err("--daemon only supports `rum up`".into());
         }
-        Command::Status { config } => run_status(&config).await?,
+        Command::Status {
+            config,
+            watch,
+            wait_ready,
+        } => run_status(&config, cli.output, watch, wait_ready).await?,
     }
 
     Ok(())
@@ -116,7 +128,12 @@ async fn run_down(
     Ok(())
 }
 
-async fn run_status(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_status(
+    config_path: &Path,
+    render_mode: RenderMode,
+    watch: bool,
+    wait_ready: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let system = load_config(config_path)?;
     let socket_path = cli::ipc::socket_path(&system);
 
@@ -125,7 +142,14 @@ async fn run_status(config_path: &Path) -> Result<(), Box<dyn std::error::Error>
         return Ok(());
     }
 
-    let app = cli::status::build_status_client(socket_path);
+    let mode = match (watch, wait_ready) {
+        (true, true) => return Err("--watch and --wait-ready are mutually exclusive".into()),
+        (true, false) => cli::status::StatusMode::Watch,
+        (false, true) => cli::status::StatusMode::WaitReady,
+        (false, false) => cli::status::StatusMode::Snapshot,
+    };
+
+    let app = cli::status::build_status_client(socket_path, render_mode, mode);
     app.run().await;
     Ok(())
 }

@@ -1,8 +1,18 @@
 use ecsdk::app::AsyncApp;
 use ecsdk::prelude::*;
+use orchestrator::instance::instance_phase::{Failed, Running, Stopped};
 use orchestrator::{EntityError, InstanceLabel, InstancePhase, OrchestratorMessage, RecoveredState};
 
 use crate::protocol::{StatusRequest, StatusResponse};
+use crate::render::{RenderMode, RumRenderPlugin};
+
+/// Client-side behavior for `rum status`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusMode {
+    Snapshot,
+    Watch,
+    WaitReady,
+}
 
 /// Isomorphic request feature that lets a client ask the daemon for a current
 /// status snapshot.
@@ -26,21 +36,43 @@ impl RequestPlugin for StatusFeature {
 }
 
 /// Build the client app used by `rum status`.
-pub fn build_status_client(socket_path: std::path::PathBuf) -> AsyncApp<OrchestratorMessage> {
+pub fn build_status_client(
+    socket_path: std::path::PathBuf,
+    render_mode: RenderMode,
+    mode: StatusMode,
+) -> AsyncApp<OrchestratorMessage> {
     let iso = crate::app::create_isomorphic_app(socket_path);
     let mut app = iso.build_client();
     StatusFeature::register_client(&mut app);
-    app.add_plugins(RumStatusClientPlugin);
+
+    if mode != StatusMode::Snapshot {
+        app.add_plugins(RumRenderPlugin::new(render_mode));
+    }
+
+    app.add_plugins(RumStatusClientPlugin { mode });
     app
 }
 
-struct RumStatusClientPlugin;
+struct RumStatusClientPlugin {
+    mode: StatusMode,
+}
 
 impl Plugin for RumStatusClientPlugin {
     fn build(&self, app: &mut App) {
+        app.insert_resource(StatusClientMode(self.mode));
         app.add_systems(Update, on_server_disconnect);
+        app.add_observer(handle_status_response);
+
+        if self.mode == StatusMode::WaitReady {
+            app.add_observer(on_running_ready);
+            app.add_observer(on_stopped_terminal);
+            app.add_observer(on_failed_terminal);
+        }
     }
 }
+
+#[derive(Resource, Clone, Copy)]
+struct StatusClientMode(StatusMode);
 
 #[allow(clippy::type_complexity)]
 fn handle_status_request(
@@ -77,7 +109,11 @@ fn handle_status_request(
     StatusRequest::reply(&mut commands, trigger.event().client_id, response);
 }
 
-fn handle_status_response(trigger: On<StatusResponse>, mut exit: MessageWriter<AppExit>) {
+fn handle_status_response(
+    trigger: On<StatusResponse>,
+    mode: Res<StatusClientMode>,
+    mut exit: MessageWriter<AppExit>,
+) {
     let status = trigger.event();
 
     if !status.found {
@@ -99,7 +135,9 @@ fn handle_status_response(trigger: On<StatusResponse>, mut exit: MessageWriter<A
         println!("  error: {error}");
     }
 
-    exit.write(AppExit::Success);
+    if mode.0 == StatusMode::Snapshot {
+        exit.write(AppExit::Success);
+    }
 }
 
 fn on_server_disconnect(
@@ -110,4 +148,28 @@ fn on_server_disconnect(
         tracing::info!("rum daemon disconnected");
         exit.write(AppExit::Success);
     }
+}
+
+fn on_running_ready(_trigger: On<Add, Running>, mut exit: MessageWriter<AppExit>) {
+    tracing::info!("managed instance reached running state");
+    exit.write(AppExit::Success);
+}
+
+fn on_stopped_terminal(_trigger: On<Add, Stopped>, mut exit: MessageWriter<AppExit>) {
+    tracing::info!("managed instance reached stopped state");
+    exit.write(AppExit::Success);
+}
+
+fn on_failed_terminal(
+    trigger: On<Add, Failed>,
+    errors: Query<&EntityError>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let entity = trigger.event_target();
+    if let Ok(error) = errors.get(entity) {
+        tracing::error!(entity = entity.index().index(), error = %error.0, "managed instance failed");
+    } else {
+        tracing::error!(entity = entity.index().index(), "managed instance failed");
+    }
+    exit.write(AppExit::Success);
 }
