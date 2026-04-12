@@ -1,5 +1,6 @@
 pub mod app;
 pub mod client;
+pub mod destroy;
 pub mod down;
 pub mod ipc;
 pub mod network;

@@ -14,6 +14,18 @@ pub struct DownResponse {
     pub accepted: bool,
 }
 
+/// Client requests that the daemon destroy the managed machine and purge its
+/// persisted state directory.
+#[derive(Default, Event, ClientRequest, Serialize, Deserialize)]
+#[request(response = "DestroyResponse")]
+pub struct DestroyRequest;
+
+/// Server acknowledges a destroy request.
+#[derive(Event, Serialize, Deserialize)]
+pub struct DestroyResponse {
+    pub accepted: bool,
+}
+
 /// Client requests a one-shot status snapshot from the daemon.
 #[derive(Default, Event, ClientRequest, Serialize, Deserialize)]
 #[request(response = "StatusResponse")]

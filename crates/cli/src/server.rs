@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use ecsdk::app::AsyncApp;
 use ecsdk::network::IsomorphicAppExt;
 use ecsdk::prelude::*;
+use ecsdk::tasks::SpawnTask;
 use machine::config::{SystemConfig, load_config};
+use machine::driver::Driver;
 use machine::driver::LibvirtDriver;
 use machine::image::ensure_base_image;
 use machine::instance::Instance;
@@ -59,20 +61,64 @@ struct RumServerPlugin;
 
 impl Plugin for RumServerPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<DestroyRequested>();
         app.add_observer(exit_on_stopped_after_shutdown);
+        app.add_observer(destroy_after_stop);
         app.add_observer(exit_on_failed);
     }
 }
 
+/// Resource toggled when the daemon should purge instance state after the
+/// managed runtime has stopped.
+#[derive(Resource, Default)]
+pub struct DestroyRequested(pub bool);
+
 fn exit_on_stopped_after_shutdown(
     _trigger: On<Add, Stopped>,
     shutdown: Res<ShutdownRequested>,
+    destroy: Res<DestroyRequested>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    if shutdown.0 {
+    if shutdown.0 && !destroy.0 {
         tracing::info!("managed instance stopped after shutdown request; exiting daemon");
         exit.write(AppExit::Success);
     }
+}
+
+fn destroy_after_stop(
+    _trigger: On<Add, Stopped>,
+    destroy: Res<DestroyRequested>,
+    instances: Query<&orchestrator::ManagedInstance<LibvirtDriver>>,
+    mut commands: Commands,
+) {
+    if !destroy.0 {
+        return;
+    }
+
+    let Some(instance) = instances.iter().next() else {
+        tracing::warn!("destroy was requested after stop, but no managed instance was found");
+        commands.insert_resource(DestroyRequested(false));
+        return;
+    };
+
+    let driver = instance.driver();
+    commands.insert_resource(DestroyRequested(false));
+    commands.spawn_empty().spawn_task(move |task| async move {
+        match driver.destroy().await {
+            Ok(()) => {
+                task.queue_cmd_wake(|world: &mut World| {
+                    tracing::info!("managed instance destroyed after shutdown; exiting daemon");
+                    world.write_message(AppExit::Success);
+                });
+            }
+            Err(error) => {
+                task.queue_cmd_wake(move |world: &mut World| {
+                    tracing::error!(error = %error, "failed to destroy managed instance after shutdown");
+                    world.write_message(AppExit::Success);
+                });
+            }
+        }
+    });
 }
 
 fn exit_on_failed(_trigger: On<Add, Failed>, mut exit: MessageWriter<AppExit>) {

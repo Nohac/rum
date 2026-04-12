@@ -3,6 +3,9 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use machine::config::load_config;
+use machine::driver::Driver;
+use machine::driver::LibvirtDriver;
+use machine::instance::Instance;
 use cli::render::RenderMode;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
@@ -37,6 +40,12 @@ enum Command {
         #[arg(default_value = "rum.toml")]
         config: PathBuf,
     },
+    /// Destroy the managed machine and purge its persisted state.
+    Destroy {
+        /// Path to the rum config file.
+        #[arg(default_value = "rum.toml")]
+        config: PathBuf,
+    },
     /// Query the daemon for the current machine status.
     Status {
         /// Path to the rum config file.
@@ -65,6 +74,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("--daemon only supports `rum up`".into());
         }
         Command::Down { config } => run_down(&config, cli.output).await?,
+        Command::Destroy { .. } if cli.daemon => {
+            return Err("--daemon only supports `rum up`".into());
+        }
+        Command::Destroy { config } => run_destroy(&config, cli.output).await?,
         Command::Status { .. } if cli.daemon => {
             return Err("--daemon only supports `rum up`".into());
         }
@@ -150,6 +163,25 @@ async fn run_status(
     };
 
     let app = cli::status::build_status_client(socket_path, render_mode, mode);
+    app.run().await;
+    Ok(())
+}
+
+async fn run_destroy(
+    config_path: &Path,
+    render_mode: RenderMode,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let system = load_config(config_path)?;
+    let socket_path = cli::ipc::socket_path(&system);
+
+    if cli::ipc::connect(&socket_path).await.is_err() {
+        let instance = Instance::<LibvirtDriver>::new(system);
+        instance.driver().destroy().await?;
+        println!("destroyed local rum state");
+        return Ok(());
+    }
+
+    let app = cli::destroy::build_destroy_client(socket_path, render_mode);
     app.run().await;
     Ok(())
 }
