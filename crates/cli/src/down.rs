@@ -1,8 +1,8 @@
 use ecsdk::app::AsyncApp;
 use ecsdk::prelude::*;
-use orchestrator::instance::instance_phase::{Failed, Stopped};
-use orchestrator::{EntityError, OrchestratorMessage};
+use orchestrator::OrchestratorMessage;
 
+use crate::exit;
 use crate::protocol::{DownRequest, DownResponse};
 use crate::render::{RenderMode, RumRenderPlugin};
 
@@ -43,9 +43,9 @@ struct RumDownClientPlugin;
 
 impl Plugin for RumDownClientPlugin {
     fn build(&self, app: &mut App) {
-        app.add_observer(on_stopped);
-        app.add_observer(on_failed);
-        app.add_systems(Update, on_server_disconnect);
+        app.add_observer(exit::on_stopped);
+        app.add_observer(exit::on_failed);
+        app.add_systems(Update, exit::on_server_disconnect);
     }
 }
 
@@ -62,33 +62,4 @@ fn handle_down_response(trigger: On<DownResponse>) {
     if trigger.event().accepted {
         tracing::info!("shutdown request accepted");
     }
-}
-
-fn on_server_disconnect(
-    mut disconnects: MessageReader<ServerDisconnected>,
-    mut exit: MessageWriter<AppExit>,
-) {
-    if disconnects.read().next().is_some() {
-        tracing::info!("rum daemon disconnected");
-        exit.write(AppExit::Success);
-    }
-}
-
-fn on_stopped(_trigger: On<Add, Stopped>, mut exit: MessageWriter<AppExit>) {
-    tracing::info!("managed instance reached stopped state");
-    exit.write(AppExit::Success);
-}
-
-fn on_failed(
-    trigger: On<Add, Failed>,
-    errors: Query<&EntityError>,
-    mut exit: MessageWriter<AppExit>,
-) {
-    let entity = trigger.event_target();
-    if let Ok(error) = errors.get(entity) {
-        tracing::error!(entity = entity.index().index(), error = %error.0, "managed instance failed");
-    } else {
-        tracing::error!(entity = entity.index().index(), "managed instance failed");
-    }
-    exit.write(AppExit::Success);
 }

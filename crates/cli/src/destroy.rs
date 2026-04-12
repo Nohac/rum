@@ -3,8 +3,8 @@ use ecsdk::prelude::*;
 use ecsdk::tasks::SpawnTask;
 use machine::driver::Driver;
 use machine::driver::LibvirtDriver;
-use orchestrator::instance::instance_phase::Failed;
-use orchestrator::{EntityError, InstancePhase, OrchestratorMessage};
+use orchestrator::{InstancePhase, OrchestratorMessage};
+use crate::exit;
 use crate::render::{RenderMode, RumRenderPlugin};
 use orchestrator::instance::ManagedInstance;
 
@@ -47,8 +47,8 @@ struct RumDestroyClientPlugin;
 
 impl Plugin for RumDestroyClientPlugin {
     fn build(&self, app: &mut App) {
-        app.add_observer(on_failed);
-        app.add_systems(Update, on_server_disconnect);
+        app.add_observer(exit::on_failed);
+        app.add_systems(Update, exit::on_server_disconnect);
     }
 }
 
@@ -107,28 +107,4 @@ fn handle_destroy_response(trigger: On<DestroyResponse>) {
     } else {
         tracing::warn!("destroy request rejected because no managed instance was found");
     }
-}
-
-fn on_server_disconnect(
-    mut disconnects: MessageReader<ServerDisconnected>,
-    mut exit: MessageWriter<AppExit>,
-) {
-    if disconnects.read().next().is_some() {
-        tracing::info!("rum daemon disconnected");
-        exit.write(AppExit::Success);
-    }
-}
-
-fn on_failed(
-    trigger: On<Add, Failed>,
-    errors: Query<&EntityError>,
-    mut exit: MessageWriter<AppExit>,
-) {
-    let entity = trigger.event_target();
-    if let Ok(error) = errors.get(entity) {
-        tracing::error!(entity = entity.index().index(), error = %error.0, "managed instance failed");
-    } else {
-        tracing::error!(entity = entity.index().index(), "managed instance failed");
-    }
-    exit.write(AppExit::Success);
 }

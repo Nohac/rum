@@ -1,8 +1,8 @@
 use ecsdk::app::AsyncApp;
 use ecsdk::prelude::*;
-use orchestrator::instance::instance_phase::{Failed, Running, Stopped};
 use orchestrator::{EntityError, InstanceLabel, InstancePhase, OrchestratorMessage, RecoveredState};
 
+use crate::exit;
 use crate::protocol::{StatusRequest, StatusResponse};
 use crate::render::{RenderMode, RumRenderPlugin};
 
@@ -60,13 +60,13 @@ struct RumStatusClientPlugin {
 impl Plugin for RumStatusClientPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(StatusClientMode(self.mode));
-        app.add_systems(Update, on_server_disconnect);
+        app.add_systems(Update, exit::on_server_disconnect);
         app.add_observer(handle_status_response);
 
         if self.mode == StatusMode::WaitReady {
-            app.add_observer(on_running_ready);
-            app.add_observer(on_stopped_terminal);
-            app.add_observer(on_failed_terminal);
+            app.add_observer(exit::on_running);
+            app.add_observer(exit::on_stopped);
+            app.add_observer(exit::on_failed);
         }
     }
 }
@@ -138,38 +138,4 @@ fn handle_status_response(
     if mode.0 == StatusMode::Snapshot {
         exit.write(AppExit::Success);
     }
-}
-
-fn on_server_disconnect(
-    mut disconnects: MessageReader<ServerDisconnected>,
-    mut exit: MessageWriter<AppExit>,
-) {
-    if disconnects.read().next().is_some() {
-        tracing::info!("rum daemon disconnected");
-        exit.write(AppExit::Success);
-    }
-}
-
-fn on_running_ready(_trigger: On<Add, Running>, mut exit: MessageWriter<AppExit>) {
-    tracing::info!("managed instance reached running state");
-    exit.write(AppExit::Success);
-}
-
-fn on_stopped_terminal(_trigger: On<Add, Stopped>, mut exit: MessageWriter<AppExit>) {
-    tracing::info!("managed instance reached stopped state");
-    exit.write(AppExit::Success);
-}
-
-fn on_failed_terminal(
-    trigger: On<Add, Failed>,
-    errors: Query<&EntityError>,
-    mut exit: MessageWriter<AppExit>,
-) {
-    let entity = trigger.event_target();
-    if let Ok(error) = errors.get(entity) {
-        tracing::error!(entity = entity.index().index(), error = %error.0, "managed instance failed");
-    } else {
-        tracing::error!(entity = entity.index().index(), "managed instance failed");
-    }
-    exit.write(AppExit::Success);
 }
