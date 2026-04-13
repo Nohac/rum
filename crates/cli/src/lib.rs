@@ -1,5 +1,6 @@
 pub mod app;
 pub mod client;
+pub mod control;
 pub mod destroy;
 pub mod down;
 pub mod exit;
@@ -7,5 +8,6 @@ pub mod ipc;
 pub mod network;
 pub mod protocol;
 pub mod render;
+pub mod restart;
 pub mod server;
 pub mod status;

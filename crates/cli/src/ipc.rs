@@ -31,3 +31,13 @@ pub async fn connect(path: &Path) -> io::Result<Stream> {
 pub fn socket_path(system: &machine::config::SystemConfig) -> PathBuf {
     machine::paths::socket_path(&system.id, system.name.as_deref())
 }
+
+/// Derive the control sidechannel socket path for one system config.
+pub fn control_socket_path(system: &machine::config::SystemConfig) -> PathBuf {
+    let socket_path = socket_path(system);
+    let stem = socket_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("rum");
+    socket_path.with_file_name(format!("{stem}.control.sock"))
+}

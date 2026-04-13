@@ -1,10 +1,13 @@
 use ecsdk::app::AsyncApp;
 use ecsdk::prelude::*;
 use orchestrator::{EntityError, InstanceLabel, InstancePhase, OrchestratorMessage, RecoveredState};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use crate::exit;
 use crate::protocol::{StatusRequest, StatusResponse};
 use crate::render::{RenderMode, RumRenderPlugin};
+use crate::restart::ProtocolRestartPlugin;
 
 /// Client-side behavior for `rum status`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +43,7 @@ pub fn build_status_client(
     socket_path: std::path::PathBuf,
     render_mode: RenderMode,
     mode: StatusMode,
+    restart_requested: Arc<AtomicBool>,
 ) -> AsyncApp<OrchestratorMessage> {
     let iso = crate::app::create_isomorphic_app(socket_path);
     let mut app = iso.build_client();
@@ -49,7 +53,10 @@ pub fn build_status_client(
         app.add_plugins(RumRenderPlugin::new(render_mode));
     }
 
-    app.add_plugins(RumStatusClientPlugin { mode });
+    app.add_plugins((
+        ProtocolRestartPlugin::new(restart_requested),
+        RumStatusClientPlugin { mode },
+    ));
     app
 }
 

@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
+use std::ffi::OsString;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use machine::config::load_config;
 use machine::driver::Driver;
 use machine::driver::LibvirtDriver;
@@ -107,16 +110,31 @@ async fn run_up(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let system = load_config(config_path)?;
     let socket_path = cli::ipc::socket_path(&system);
+    let restart_requested = Arc::new(AtomicBool::new(false));
 
     ensure_daemon(config_path, &socket_path).await?;
 
-    let app = cli::client::build_up_client(socket_path, render_mode);
+    let app = cli::client::build_up_client(socket_path, render_mode, restart_requested.clone());
     app.run().await;
+    maybe_restart_daemon(
+        config_path,
+        &system,
+        restart_requested,
+        up_args(config_path, render_mode),
+    )
+    .await?;
     Ok(())
 }
 
 async fn run_daemon(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let spec = cli::server::load_server_spec(config_path).await?;
+    let socket_path = spec.socket_path.clone();
+    let control_socket_path = cli::ipc::control_socket_path(&spec.system);
+    tokio::spawn(async move {
+        if let Err(error) = cli::control::run_control_server(control_socket_path, socket_path).await {
+            tracing::error!(error = %error, "control sidechannel failed");
+        }
+    });
     let socket_path = spec.socket_path.clone();
     let app = cli::server::build_up_server(spec);
     app.run().await;
@@ -130,14 +148,23 @@ async fn run_down(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let system = load_config(config_path)?;
     let socket_path = cli::ipc::socket_path(&system);
+    let restart_requested = Arc::new(AtomicBool::new(false));
 
     if cli::ipc::connect(&socket_path).await.is_err() {
         tracing::info!(socket = %socket_path.display(), "no rum daemon is running");
         return Ok(());
     }
 
-    let app = cli::down::build_down_client(socket_path, render_mode);
+    let app =
+        cli::down::build_down_client(socket_path, render_mode, restart_requested.clone());
     app.run().await;
+    maybe_restart_daemon(
+        config_path,
+        &system,
+        restart_requested,
+        down_args(config_path, render_mode),
+    )
+    .await?;
     Ok(())
 }
 
@@ -149,6 +176,7 @@ async fn run_status(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let system = load_config(config_path)?;
     let socket_path = cli::ipc::socket_path(&system);
+    let restart_requested = Arc::new(AtomicBool::new(false));
 
     if cli::ipc::connect(&socket_path).await.is_err() {
         println!("no rum daemon is running");
@@ -162,8 +190,16 @@ async fn run_status(
         (false, false) => cli::status::StatusMode::Snapshot,
     };
 
-    let app = cli::status::build_status_client(socket_path, render_mode, mode);
+    let app =
+        cli::status::build_status_client(socket_path, render_mode, mode, restart_requested.clone());
     app.run().await;
+    maybe_restart_daemon(
+        config_path,
+        &system,
+        restart_requested,
+        status_args(config_path, render_mode, watch, wait_ready),
+    )
+    .await?;
     Ok(())
 }
 
@@ -173,6 +209,7 @@ async fn run_destroy(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let system = load_config(config_path)?;
     let socket_path = cli::ipc::socket_path(&system);
+    let restart_requested = Arc::new(AtomicBool::new(false));
 
     if cli::ipc::connect(&socket_path).await.is_err() {
         let instance = Instance::<LibvirtDriver>::new(system);
@@ -181,8 +218,16 @@ async fn run_destroy(
         return Ok(());
     }
 
-    let app = cli::destroy::build_destroy_client(socket_path, render_mode);
+    let app =
+        cli::destroy::build_destroy_client(socket_path, render_mode, restart_requested.clone());
     app.run().await;
+    maybe_restart_daemon(
+        config_path,
+        &system,
+        restart_requested,
+        destroy_args(config_path, render_mode),
+    )
+    .await?;
     Ok(())
 }
 
@@ -221,4 +266,112 @@ fn spawn_daemon(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .stderr(std::process::Stdio::inherit())
         .spawn()?;
     Ok(())
+}
+
+async fn maybe_restart_daemon(
+    config_path: &Path,
+    system: &machine::config::SystemConfig,
+    restart_requested: Arc<AtomicBool>,
+    args: Vec<OsString>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !restart_requested.swap(false, Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    let control_socket_path = cli::ipc::control_socket_path(system);
+    let main_socket_path = cli::ipc::socket_path(system);
+    let pid = cli::control::shutdown_daemon(&control_socket_path)
+        .await
+        .map_err(|error| format!("failed to shut down stale daemon: {error}"))?;
+
+    wait_for_pid_exit(pid).await?;
+    spawn_daemon(config_path)?;
+
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if cli::ipc::connect(&main_socket_path).await.is_ok() {
+            break;
+        }
+    }
+
+    let exe = std::env::current_exe()?;
+    let status = std::process::Command::new(exe)
+        .args(args)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()?;
+
+    if !status.success() {
+        return Err(format!("replacement client exited with {status}").into());
+    }
+
+    Ok(())
+}
+
+async fn wait_for_pid_exit(pid: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let proc_path = PathBuf::from(format!("/proc/{pid}"));
+    for _ in 0..50 {
+        if !proc_path.exists() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(format!("timed out waiting for daemon process {pid} to exit").into())
+}
+
+fn render_mode_arg(render_mode: RenderMode) -> OsString {
+    let name = render_mode
+        .to_possible_value()
+        .map(|value| value.get_name().to_string())
+        .unwrap_or_else(|| "plain".into());
+    OsString::from(name)
+}
+
+fn up_args(config_path: &Path, render_mode: RenderMode) -> Vec<OsString> {
+    vec![
+        OsString::from("--output"),
+        render_mode_arg(render_mode),
+        OsString::from("up"),
+        config_path.as_os_str().to_os_string(),
+    ]
+}
+
+fn down_args(config_path: &Path, render_mode: RenderMode) -> Vec<OsString> {
+    vec![
+        OsString::from("--output"),
+        render_mode_arg(render_mode),
+        OsString::from("down"),
+        config_path.as_os_str().to_os_string(),
+    ]
+}
+
+fn destroy_args(config_path: &Path, render_mode: RenderMode) -> Vec<OsString> {
+    vec![
+        OsString::from("--output"),
+        render_mode_arg(render_mode),
+        OsString::from("destroy"),
+        config_path.as_os_str().to_os_string(),
+    ]
+}
+
+fn status_args(
+    config_path: &Path,
+    render_mode: RenderMode,
+    watch: bool,
+    wait_ready: bool,
+) -> Vec<OsString> {
+    let mut args = vec![
+        OsString::from("--output"),
+        render_mode_arg(render_mode),
+        OsString::from("status"),
+        config_path.as_os_str().to_os_string(),
+    ];
+    if watch {
+        args.push(OsString::from("--watch"));
+    }
+    if wait_ready {
+        args.push(OsString::from("--wait-ready"));
+    }
+    args
 }
