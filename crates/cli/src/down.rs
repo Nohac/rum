@@ -1,13 +1,9 @@
 use ecsdk::app::AsyncApp;
 use ecsdk::prelude::*;
 use orchestrator::OrchestratorMessage;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 use crate::exit;
 use crate::protocol::{DownRequest, DownResponse};
-use crate::render::{RenderMode, RumRenderPlugin};
-use crate::restart::ProtocolRestartPlugin;
 
 /// Isomorphic request feature that lets a client ask the daemon to shut down
 /// the managed machine.
@@ -31,19 +27,9 @@ impl RequestPlugin for DownFeature {
 }
 
 /// Build the client app used by `rum down`.
-pub fn build_down_client(
-    socket_path: std::path::PathBuf,
-    render_mode: RenderMode,
-    restart_requested: Arc<AtomicBool>,
-) -> AsyncApp<OrchestratorMessage> {
-    let iso = crate::app::create_isomorphic_app(socket_path);
-    let mut app = iso.build_client();
+pub fn build_down_client(mut app: AsyncApp<OrchestratorMessage>) -> AsyncApp<OrchestratorMessage> {
     DownFeature::register_client(&mut app);
-    app.add_plugins((
-        RumRenderPlugin::new(render_mode),
-        ProtocolRestartPlugin::new(restart_requested),
-        RumDownClientPlugin,
-    ));
+    app.add_plugins(RumDownClientPlugin);
     app
 }
 

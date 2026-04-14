@@ -90,7 +90,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Command::Starts(cmd) => match cmd {
             StartsDaemonCmd::Up => {
-                run_up(&cli.config, &system, iso, cli.output).await?;
+                let app = cli::app::build_client_app(iso, cli.output, true);
+                run_up(&cli.config, &system, app).await?;
                 maybe_restart_daemon(
                     &cli.config,
                     &system,
@@ -105,7 +106,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             match cmd {
                 RequiresDaemonCmd::Down => {
-                    run_down(iso, cli.output).await?;
+                    let app = cli::app::build_client_app(iso, cli.output, true);
+                    run_down(app).await?;
                     maybe_restart_daemon(
                         &cli.config,
                         &system,
@@ -115,7 +117,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .await?;
                 }
                 RequiresDaemonCmd::Status { watch, wait_ready } => {
-                    run_status(iso, cli.output, watch, wait_ready).await?;
+                    let render_enabled = watch || wait_ready;
+                    let app = cli::app::build_client_app(iso, cli.output, render_enabled);
+                    run_status(app, watch, wait_ready).await?;
                     maybe_restart_daemon(
                         &cli.config,
                         &system,
@@ -128,7 +132,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Maybe(cmd) => match cmd {
             MaybeDaemonCmd::Destroy => {
-                run_destroy(&cli.config, system, iso, restart_requested, cli.output).await?;
+                let app = cli::app::build_client_app(iso, cli.output, true);
+                run_destroy(&cli.config, system, app, restart_requested, cli.output).await?;
             }
         },
     }
@@ -149,13 +154,12 @@ fn init_tracing() {
 async fn run_up(
     config_path: &Path,
     system: &SystemConfig,
-    iso: ecsdk::network::IsomorphicApp<orchestrator::OrchestratorMessage>,
-    render_mode: RenderMode,
+    app: ecsdk::app::AsyncApp<orchestrator::OrchestratorMessage>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = cli::ipc::socket_path(system);
     ensure_daemon(config_path, &socket_path).await?;
 
-    let app = cli::client::build_up_client(iso, render_mode);
+    let app = cli::client::build_up_client(app);
     app.run().await;
     Ok(())
 }
@@ -181,17 +185,15 @@ async fn run_daemon(config_path: &Path) -> Result<(), Box<dyn std::error::Error>
 }
 
 async fn run_down(
-    iso: ecsdk::network::IsomorphicApp<orchestrator::OrchestratorMessage>,
-    render_mode: RenderMode,
+    app: ecsdk::app::AsyncApp<orchestrator::OrchestratorMessage>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let app = cli::down::build_down_client(iso, render_mode);
+    let app = cli::down::build_down_client(app);
     app.run().await;
     Ok(())
 }
 
 async fn run_status(
-    iso: ecsdk::network::IsomorphicApp<orchestrator::OrchestratorMessage>,
-    render_mode: RenderMode,
+    app: ecsdk::app::AsyncApp<orchestrator::OrchestratorMessage>,
     watch: bool,
     wait_ready: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -202,7 +204,7 @@ async fn run_status(
         (false, false) => cli::status::StatusMode::Snapshot,
     };
 
-    let app = cli::status::build_status_client(iso, render_mode, mode);
+    let app = cli::status::build_status_client(app, mode);
     app.run().await;
     Ok(())
 }
@@ -210,7 +212,7 @@ async fn run_status(
 async fn run_destroy(
     config_path: &Path,
     system: SystemConfig,
-    iso: ecsdk::network::IsomorphicApp<orchestrator::OrchestratorMessage>,
+    app: ecsdk::app::AsyncApp<orchestrator::OrchestratorMessage>,
     restart_requested: Arc<AtomicBool>,
     render_mode: RenderMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -223,7 +225,7 @@ async fn run_destroy(
         return Ok(());
     }
 
-    let app = cli::destroy::build_destroy_client(iso, render_mode);
+    let app = cli::destroy::build_destroy_client(app);
     app.run().await;
     maybe_restart_daemon(
         config_path,

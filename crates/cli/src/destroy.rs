@@ -4,11 +4,7 @@ use ecsdk::tasks::SpawnTask;
 use machine::driver::Driver;
 use machine::driver::LibvirtDriver;
 use orchestrator::{InstancePhase, OrchestratorMessage};
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use crate::exit;
-use crate::render::{RenderMode, RumRenderPlugin};
-use crate::restart::ProtocolRestartPlugin;
 use orchestrator::instance::ManagedInstance;
 
 use crate::protocol::{DestroyRequest, DestroyResponse};
@@ -36,18 +32,10 @@ impl RequestPlugin for DestroyFeature {
 
 /// Build the client app used by `rum destroy`.
 pub fn build_destroy_client(
-    socket_path: std::path::PathBuf,
-    render_mode: RenderMode,
-    restart_requested: Arc<AtomicBool>,
+    mut app: AsyncApp<OrchestratorMessage>,
 ) -> AsyncApp<OrchestratorMessage> {
-    let iso = crate::app::create_isomorphic_app(socket_path);
-    let mut app = iso.build_client();
     DestroyFeature::register_client(&mut app);
-    app.add_plugins((
-        RumRenderPlugin::new(render_mode),
-        ProtocolRestartPlugin::new(restart_requested),
-        RumDestroyClientPlugin,
-    ));
+    app.add_plugins(RumDestroyClientPlugin);
     app
 }
 

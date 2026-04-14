@@ -1,13 +1,8 @@
 use ecsdk::app::AsyncApp;
-use ecsdk::network::IsomorphicPlugin;
 use ecsdk::prelude::*;
 use orchestrator::OrchestratorMessage;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 use crate::exit;
-use crate::render::{RenderMode, RumRenderPlugin};
-use crate::restart::ProtocolRestartPlugin;
 
 /// Client-side observers for the first plain `rum up` flow.
 ///
@@ -24,26 +19,8 @@ impl Plugin for RumClientPlugin {
     }
 }
 
-struct ClientOnlyPlugin;
-
-impl IsomorphicPlugin for ClientOnlyPlugin {
-    fn build_client(&self, app: &mut App) {
-        app.add_plugins(RumClientPlugin);
-    }
-}
-
 /// Build the client app used by the initial `rum up` command.
-pub fn build_up_client(
-    socket_path: std::path::PathBuf,
-    render_mode: RenderMode,
-    restart_requested: Arc<AtomicBool>,
-) -> AsyncApp<OrchestratorMessage> {
-    let mut iso = crate::app::create_isomorphic_app(socket_path);
-    iso.add_plugin(ClientOnlyPlugin);
-    let mut app = iso.build_client();
-    app.add_plugins((
-        RumRenderPlugin::new(render_mode),
-        ProtocolRestartPlugin::new(restart_requested),
-    ));
+pub fn build_up_client(mut app: AsyncApp<OrchestratorMessage>) -> AsyncApp<OrchestratorMessage> {
+    app.add_plugins(RumClientPlugin);
     app
 }
