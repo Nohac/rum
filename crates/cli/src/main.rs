@@ -272,9 +272,10 @@ async fn ensure_connected(system: &SystemConfig) -> Result<(), Box<dyn std::erro
 fn spawn_daemon(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let exe = std::env::current_exe()?;
     std::process::Command::new(exe)
+        .arg("--config")
+        .arg(config_path)
         .arg("--daemon")
         .arg("up")
-        .arg(config_path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
@@ -344,28 +345,31 @@ fn render_mode_arg(render_mode: RenderMode) -> OsString {
 
 fn up_args(config_path: &Path, render_mode: RenderMode) -> Vec<OsString> {
     vec![
+        OsString::from("--config"),
+        config_path.as_os_str().to_os_string(),
         OsString::from("--output"),
         render_mode_arg(render_mode),
         OsString::from("up"),
-        config_path.as_os_str().to_os_string(),
     ]
 }
 
 fn down_args(config_path: &Path, render_mode: RenderMode) -> Vec<OsString> {
     vec![
+        OsString::from("--config"),
+        config_path.as_os_str().to_os_string(),
         OsString::from("--output"),
         render_mode_arg(render_mode),
         OsString::from("down"),
-        config_path.as_os_str().to_os_string(),
     ]
 }
 
 fn destroy_args(config_path: &Path, render_mode: RenderMode) -> Vec<OsString> {
     vec![
+        OsString::from("--config"),
+        config_path.as_os_str().to_os_string(),
         OsString::from("--output"),
         render_mode_arg(render_mode),
         OsString::from("destroy"),
-        config_path.as_os_str().to_os_string(),
     ]
 }
 
@@ -376,10 +380,11 @@ fn status_args(
     wait_ready: bool,
 ) -> Vec<OsString> {
     let mut args = vec![
+        OsString::from("--config"),
+        config_path.as_os_str().to_os_string(),
         OsString::from("--output"),
         render_mode_arg(render_mode),
         OsString::from("status"),
-        config_path.as_os_str().to_os_string(),
     ];
     if watch {
         args.push(OsString::from("--watch"));

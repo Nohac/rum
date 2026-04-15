@@ -31,6 +31,7 @@ impl RequestPlugin for StatusFeature {
 
     fn build_client(app: &mut App) {
         app.add_observer(handle_status_response);
+        app.add_systems(Update, exit::on_server_disconnect);
     }
 }
 
@@ -51,8 +52,6 @@ struct RumStatusClientPlugin {
 impl Plugin for RumStatusClientPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(StatusClientMode(self.mode));
-        app.add_systems(Update, exit::on_server_disconnect);
-        app.add_observer(handle_status_response);
 
         if self.mode == StatusMode::WaitReady {
             app.add_observer(exit::on_running);

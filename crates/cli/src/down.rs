@@ -23,24 +23,16 @@ impl RequestPlugin for DownFeature {
 
     fn build_client(app: &mut App) {
         app.add_observer(handle_down_response);
+        app.add_observer(exit::on_stopped);
+        app.add_observer(exit::on_failed);
+        app.add_systems(Update, exit::on_server_disconnect);
     }
 }
 
 /// Build the client app used by `rum down`.
 pub fn build_down_client(mut app: AsyncApp<OrchestratorMessage>) -> AsyncApp<OrchestratorMessage> {
     DownFeature::register_client(&mut app);
-    app.add_plugins(RumDownClientPlugin);
     app
-}
-
-struct RumDownClientPlugin;
-
-impl Plugin for RumDownClientPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_observer(exit::on_stopped);
-        app.add_observer(exit::on_failed);
-        app.add_systems(Update, exit::on_server_disconnect);
-    }
 }
 
 fn handle_down_request(trigger: On<FromClient<DownRequest>>, mut commands: Commands) {

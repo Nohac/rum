@@ -27,6 +27,8 @@ impl RequestPlugin for DestroyFeature {
 
     fn build_client(app: &mut App) {
         app.add_observer(handle_destroy_response);
+        app.add_observer(exit::on_failed);
+        app.add_systems(Update, exit::on_server_disconnect);
     }
 }
 
@@ -35,17 +37,7 @@ pub fn build_destroy_client(
     mut app: AsyncApp<OrchestratorMessage>,
 ) -> AsyncApp<OrchestratorMessage> {
     DestroyFeature::register_client(&mut app);
-    app.add_plugins(RumDestroyClientPlugin);
     app
-}
-
-struct RumDestroyClientPlugin;
-
-impl Plugin for RumDestroyClientPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_observer(exit::on_failed);
-        app.add_systems(Update, exit::on_server_disconnect);
-    }
 }
 
 fn handle_destroy_request(
