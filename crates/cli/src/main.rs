@@ -12,6 +12,8 @@ use machine::instance::Instance;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 
+const INTERNAL_DAEMON_CONFIG: &str = "RUM_INTERNAL_DAEMON_CONFIG";
+
 #[derive(Parser)]
 #[command(name = "rum")]
 #[command(about = "Bootstraps rum orchestration flows")]
@@ -19,10 +21,6 @@ struct Cli {
     /// Path to the rum config file.
     #[arg(short, long, default_value = "rum.toml")]
     config: PathBuf,
-
-    /// Run in daemon mode instead of attaching as a client.
-    #[arg(short, long)]
-    daemon: bool,
 
     /// Output mode for the attached client.
     #[arg(long, value_enum, default_value_t = RenderMode::Plain)]
@@ -34,6 +32,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Internal daemon entrypoint.
+    Daemon,
+
     #[command(flatten)]
     Starts(StartsDaemonCmd),
     #[command(flatten)]
@@ -73,13 +74,16 @@ enum MaybeDaemonCmd {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing();
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
 
-    if cli.daemon {
-        return match cli.command {
-            Command::Starts(StartsDaemonCmd::Up) => run_daemon(&cli.config).await,
-            _ => Err("--daemon only supports `rum up`".into()),
-        };
+    if matches!(cli.command, Command::Daemon)
+        && let Some(config) = std::env::var_os(INTERNAL_DAEMON_CONFIG)
+    {
+        cli.config = PathBuf::from(config);
+    }
+
+    if matches!(cli.command, Command::Daemon) {
+        return run_daemon(&cli.config).await;
     }
 
     let system = load_config(&cli.config)?;
@@ -88,6 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iso = cli::app::create_isomorphic_app(socket_path, restart_requested.clone());
 
     match cli.command {
+        Command::Daemon => unreachable!("daemon command returns before client setup"),
         Command::Starts(cmd) => match cmd {
             StartsDaemonCmd::Up => {
                 let app = cli::app::build_client_app(iso, cli.output, true);
@@ -271,11 +276,15 @@ async fn ensure_connected(system: &SystemConfig) -> Result<(), Box<dyn std::erro
 
 fn spawn_daemon(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let exe = std::env::current_exe()?;
+    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let config_name = config_path
+        .file_name()
+        .ok_or_else(|| format!("invalid config path: {}", config_path.display()))?;
+
     std::process::Command::new(exe)
-        .arg("--config")
-        .arg(config_path)
-        .arg("--daemon")
-        .arg("up")
+        .current_dir(config_dir)
+        .env(INTERNAL_DAEMON_CONFIG, config_name)
+        .arg("daemon")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
