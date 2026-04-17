@@ -91,19 +91,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let restart_requested = Arc::new(AtomicBool::new(false));
     let iso = cli::app::create_isomorphic_app(socket_path, restart_requested.clone());
 
-    match cli.command {
+    let restart_args = match cli.command {
         Command::Daemon => unreachable!("daemon command returns before client setup"),
         Command::Starts(cmd) => match cmd {
             StartsDaemonCmd::Up => {
                 let app = cli::app::build_client_app(iso, cli.output, true);
                 run_up(&cli.config, &system, app).await?;
-                maybe_restart_daemon(
-                    &cli.config,
-                    &system,
-                    restart_requested,
-                    up_args(&cli.config, cli.output),
-                )
-                .await?;
+                up_args(&cli.config, cli.output)
             }
         },
         Command::Requires(cmd) => {
@@ -113,35 +107,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 RequiresDaemonCmd::Down => {
                     let app = cli::app::build_client_app(iso, cli.output, true);
                     run_down(app).await?;
-                    maybe_restart_daemon(
-                        &cli.config,
-                        &system,
-                        restart_requested,
-                        down_args(&cli.config, cli.output),
-                    )
-                    .await?;
+                    down_args(&cli.config, cli.output)
                 }
                 RequiresDaemonCmd::Status { watch, wait_ready } => {
                     let render_enabled = watch || wait_ready;
                     let app = cli::app::build_client_app(iso, cli.output, render_enabled);
                     run_status(app, watch, wait_ready).await?;
-                    maybe_restart_daemon(
-                        &cli.config,
-                        &system,
-                        restart_requested,
-                        status_args(&cli.config, cli.output, watch, wait_ready),
-                    )
-                    .await?;
+                    status_args(&cli.config, cli.output, watch, wait_ready)
                 }
             }
         }
         Command::Maybe(cmd) => match cmd {
             MaybeDaemonCmd::Destroy => {
                 let app = cli::app::build_client_app(iso, cli.output, true);
-                run_destroy(&cli.config, system, app, restart_requested, cli.output).await?;
+                run_destroy(
+                    &cli.config,
+                    system.clone(),
+                    app,
+                    restart_requested.clone(),
+                    cli.output,
+                )
+                .await?;
+                destroy_args(&cli.config, cli.output)
             }
         },
-    }
+    };
+
+    maybe_restart_daemon(&cli.config, &system, restart_requested, restart_args).await?;
 
     Ok(())
 }
