@@ -46,7 +46,7 @@ impl Control for ControlService {
 pub async fn run_control_server(
     control_socket_path: PathBuf,
     main_socket_path: PathBuf,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(&control_socket_path);
     let listener = UnixListener::bind(&control_socket_path)?;
     tracing::info!(socket = %control_socket_path.display(), "rum daemon control listening");
@@ -72,9 +72,7 @@ pub async fn run_control_server(
 }
 
 /// Request that the daemon process exit and return its pid.
-pub async fn shutdown_daemon(
-    control_socket_path: &Path,
-) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
+pub async fn shutdown_daemon(control_socket_path: &Path) -> anyhow::Result<u32> {
     let connector = UnixConnector {
         path: control_socket_path.to_path_buf(),
     };

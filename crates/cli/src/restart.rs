@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ecsdk::bevy_replicon::shared::protocol::ProtocolMismatch;
+use ecsdk::network::IsomorphicPlugin;
 use ecsdk::prelude::*;
 
 /// Shared flag toggled when the client wants the daemon to be restarted after
@@ -21,8 +22,8 @@ impl ProtocolRestartPlugin {
     }
 }
 
-impl Plugin for ProtocolRestartPlugin {
-    fn build(&self, app: &mut App) {
+impl IsomorphicPlugin for ProtocolRestartPlugin {
+    fn build_client(&self, app: &mut App) {
         app.insert_resource(RestartRequested(self.requested.clone()));
         app.add_observer(on_protocol_mismatch);
     }

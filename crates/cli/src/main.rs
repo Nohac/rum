@@ -1,11 +1,11 @@
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use clap::{Parser, Subcommand, ValueEnum};
-use cli::render::RenderMode;
+use anyhow::Context;
+use clap::{Parser, Subcommand};
+use cli::render::{RenderMode, RumRenderPlugin};
 use machine::config::{SystemConfig, load_config};
 use machine::driver::{Driver, LibvirtDriver};
 use machine::instance::Instance;
@@ -79,7 +79,7 @@ enum MaybeDaemonCmd {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
     init_tracing();
     let mut cli = Cli::parse();
 
@@ -93,52 +93,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_daemon(&cli.config).await;
     }
 
-    let system = load_config(&cli.config)?;
+    let system = load_config(&cli.config).context("failed to load machine config")?;
     let socket_path = cli::ipc::socket_path(&system);
     let restart_requested = Arc::new(AtomicBool::new(false));
     let iso = cli::app::create_isomorphic_app(socket_path, restart_requested.clone());
 
-    let restart_args = match cli.command {
+    let mut app = iso.build_client();
+    let config_path = cli.config.canonicalize()?;
+
+    match cli.command {
         Command::Daemon => unreachable!("daemon command returns before client setup"),
         Command::Starts(cmd) => match cmd {
             StartsDaemonCmd::Up => {
-                let app = cli::app::build_client_app(iso, cli.output, true);
-                run_up(&cli.config, &system, app).await?;
-                up_args(&cli.config, cli.output)
+                app.add_plugins(RumRenderPlugin::new(cli.output));
+                run_up(&config_path, &system, app)
+                    .await
+                    .context("failed to run up command")?;
             }
         },
         Command::Requires(cmd) => {
-            ensure_connected(&system).await?;
+            ensure_connected(&cli.config, &system).await?;
 
             match cmd {
                 RequiresDaemonCmd::Down => {
-                    let app = cli::app::build_client_app(iso, cli.output, true);
                     run_down(app).await?;
-                    down_args(&cli.config, cli.output)
                 }
                 RequiresDaemonCmd::Cp { src, dst } => {
-                    let app = cli::app::build_client_app(iso, cli.output, false);
                     run_cp(app, &src, &dst).await?;
-                    cp_args(&cli.config, cli.output, &src, &dst)
                 }
                 RequiresDaemonCmd::Status { watch, wait_ready } => {
                     let render_enabled = watch || wait_ready;
-                    let app = cli::app::build_client_app(iso, cli.output, render_enabled);
+                    if render_enabled {
+                        app.add_plugins(RumRenderPlugin::new(cli.output));
+                    }
                     run_status(app, watch, wait_ready).await?;
-                    status_args(&cli.config, cli.output, watch, wait_ready)
                 }
             }
         }
         Command::Maybe(cmd) => match cmd {
             MaybeDaemonCmd::Destroy => {
-                let app = cli::app::build_client_app(iso, cli.output, true);
+                let app = cli::app::build_client_app(app, cli.output, true);
                 run_destroy(system.clone(), app).await?;
-                destroy_args(&cli.config, cli.output)
             }
         },
     };
-
-    maybe_restart_daemon(&cli.config, &system, restart_requested, restart_args).await?;
 
     Ok(())
 }
@@ -157,16 +155,18 @@ async fn run_up(
     config_path: &Path,
     system: &SystemConfig,
     app: ecsdk::app::AsyncApp<orchestrator::OrchestratorMessage>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     let socket_path = cli::ipc::socket_path(system);
-    ensure_daemon(config_path, &socket_path).await?;
+    ensure_daemon(config_path, &socket_path)
+        .await
+        .context("Failed to ensure daemon")?;
 
     let app = cli::client::build_up_client(app);
     app.run().await;
     Ok(())
 }
 
-async fn run_daemon(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_daemon(config_path: &Path) -> anyhow::Result<()> {
     let spec = cli::server::load_server_spec(config_path).await?;
     let socket_path = spec.socket_path.clone();
     let control_socket_path = cli::ipc::control_socket_path(&spec.system);
@@ -188,7 +188,7 @@ async fn run_daemon(config_path: &Path) -> Result<(), Box<dyn std::error::Error>
 
 async fn run_down(
     app: ecsdk::app::AsyncApp<orchestrator::OrchestratorMessage>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     let app = cli::down::build_down_client(app);
     app.run().await;
     Ok(())
@@ -198,9 +198,9 @@ async fn run_status(
     app: ecsdk::app::AsyncApp<orchestrator::OrchestratorMessage>,
     watch: bool,
     wait_ready: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     let mode = match (watch, wait_ready) {
-        (true, true) => return Err("--watch and --wait-ready are mutually exclusive".into()),
+        (true, true) => anyhow::bail!("--watch and --wait-ready are mutually exclusive"),
         (true, false) => cli::status::StatusMode::Watch,
         (false, true) => cli::status::StatusMode::WaitReady,
         (false, false) => cli::status::StatusMode::Snapshot,
@@ -215,7 +215,7 @@ async fn run_cp(
     app: ecsdk::app::AsyncApp<orchestrator::OrchestratorMessage>,
     src: &str,
     dst: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     let request = cli::cp::prepare_request(src, dst)?;
     let app = cli::cp::build_cp_client(app, request);
     app.run().await;
@@ -225,7 +225,7 @@ async fn run_cp(
 async fn run_destroy(
     system: SystemConfig,
     app: ecsdk::app::AsyncApp<orchestrator::OrchestratorMessage>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     let socket_path = cli::ipc::socket_path(&system);
 
     if cli::ipc::connect(&socket_path).await.is_err() {
@@ -240,14 +240,10 @@ async fn run_destroy(
     Ok(())
 }
 
-async fn ensure_daemon(
-    config_path: &Path,
-    socket_path: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn ensure_daemon(config_path: &Path, socket_path: &Path) -> anyhow::Result<()> {
     if cli::ipc::connect(socket_path).await.is_ok() {
         return Ok(());
     }
-
     spawn_daemon(config_path)?;
 
     for _ in 0..50 {
@@ -257,54 +253,49 @@ async fn ensure_daemon(
         }
     }
 
-    Err(format!(
+    anyhow::bail!(format!(
         "timed out waiting for rum daemon at {}",
         socket_path.display()
-    )
-    .into())
+    ))
 }
 
-async fn ensure_connected(system: &SystemConfig) -> Result<(), Box<dyn std::error::Error>> {
+async fn ensure_connected(config: &Path, system: &SystemConfig) -> anyhow::Result<()> {
     let socket_path = cli::ipc::socket_path(system);
-    if cli::ipc::connect(&socket_path).await.is_ok() {
-        return Ok(());
-    }
-    Err(format!("no rum daemon is running at {}", socket_path.display()).into())
+    return match cli::ipc::connect(&socket_path).await {
+        Ok(_) => Ok(()),
+        Err(_) => maybe_restart_daemon(config, system).await,
+    };
 }
 
-fn spawn_daemon(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn spawn_daemon(config_path: &Path) -> anyhow::Result<()> {
     let exe = std::env::current_exe()?;
-    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let config_dir = config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .canonicalize()
+        .context("what is hanging")?;
+
     let config_name = config_path
         .file_name()
-        .ok_or_else(|| format!("invalid config path: {}", config_path.display()))?;
-
-    std::process::Command::new(exe)
+        .context(format!("invalid config path: {}", &config_path.display()))?;
+    std::process::Command::new(&exe)
         .current_dir(config_dir)
         .env(INTERNAL_DAEMON_CONFIG, config_name)
         .arg("daemon")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
-        .spawn()?;
+        .spawn()
+        .context(format!("Failed to run command: {}", exe.display()))?;
     Ok(())
 }
 
-async fn maybe_restart_daemon(
-    config_path: &Path,
-    system: &SystemConfig,
-    restart_requested: Arc<AtomicBool>,
-    args: Vec<OsString>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if !restart_requested.swap(false, Ordering::SeqCst) {
-        return Ok(());
-    }
-
+async fn maybe_restart_daemon(config_path: &Path, system: &SystemConfig) -> anyhow::Result<()> {
     let control_socket_path = cli::ipc::control_socket_path(system);
     let main_socket_path = cli::ipc::socket_path(system);
     let pid = cli::control::shutdown_daemon(&control_socket_path)
         .await
-        .map_err(|error| format!("failed to shut down stale daemon: {error}"))?;
+        .context("Failed to shut down daemon")?;
 
     wait_for_pid_exit(pid).await?;
     spawn_daemon(config_path)?;
@@ -316,22 +307,10 @@ async fn maybe_restart_daemon(
         }
     }
 
-    let exe = std::env::current_exe()?;
-    let status = std::process::Command::new(exe)
-        .args(args)
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()?;
-
-    if !status.success() {
-        return Err(format!("replacement client exited with {status}").into());
-    }
-
     Ok(())
 }
 
-async fn wait_for_pid_exit(pid: u32) -> Result<(), Box<dyn std::error::Error>> {
+async fn wait_for_pid_exit(pid: u32) -> anyhow::Result<()> {
     let proc_path = PathBuf::from(format!("/proc/{pid}"));
     for _ in 0..50 {
         if !proc_path.exists() {
@@ -339,77 +318,5 @@ async fn wait_for_pid_exit(pid: u32) -> Result<(), Box<dyn std::error::Error>> {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    Err(format!("timed out waiting for daemon process {pid} to exit").into())
-}
-
-fn render_mode_arg(render_mode: RenderMode) -> OsString {
-    let name = render_mode
-        .to_possible_value()
-        .map(|value| value.get_name().to_string())
-        .unwrap_or_else(|| "plain".into());
-    OsString::from(name)
-}
-
-fn up_args(config_path: &Path, render_mode: RenderMode) -> Vec<OsString> {
-    vec![
-        OsString::from("--config"),
-        config_path.as_os_str().to_os_string(),
-        OsString::from("--output"),
-        render_mode_arg(render_mode),
-        OsString::from("up"),
-    ]
-}
-
-fn down_args(config_path: &Path, render_mode: RenderMode) -> Vec<OsString> {
-    vec![
-        OsString::from("--config"),
-        config_path.as_os_str().to_os_string(),
-        OsString::from("--output"),
-        render_mode_arg(render_mode),
-        OsString::from("down"),
-    ]
-}
-
-fn cp_args(config_path: &Path, render_mode: RenderMode, src: &str, dst: &str) -> Vec<OsString> {
-    vec![
-        OsString::from("--config"),
-        config_path.as_os_str().to_os_string(),
-        OsString::from("--output"),
-        render_mode_arg(render_mode),
-        OsString::from("cp"),
-        OsString::from(src),
-        OsString::from(dst),
-    ]
-}
-
-fn destroy_args(config_path: &Path, render_mode: RenderMode) -> Vec<OsString> {
-    vec![
-        OsString::from("--config"),
-        config_path.as_os_str().to_os_string(),
-        OsString::from("--output"),
-        render_mode_arg(render_mode),
-        OsString::from("destroy"),
-    ]
-}
-
-fn status_args(
-    config_path: &Path,
-    render_mode: RenderMode,
-    watch: bool,
-    wait_ready: bool,
-) -> Vec<OsString> {
-    let mut args = vec![
-        OsString::from("--config"),
-        config_path.as_os_str().to_os_string(),
-        OsString::from("--output"),
-        render_mode_arg(render_mode),
-        OsString::from("status"),
-    ];
-    if watch {
-        args.push(OsString::from("--watch"));
-    }
-    if wait_ready {
-        args.push(OsString::from("--wait-ready"));
-    }
-    args
+    anyhow::bail!("timed out waiting for daemon process {pid} to exit")
 }

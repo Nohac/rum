@@ -24,6 +24,7 @@ serde.workspace = true
 tokio = { workspace = true, features = ["process", "rt-multi-thread", "signal", "time"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+anyhow = "1.0.102"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

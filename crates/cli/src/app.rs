@@ -21,7 +21,9 @@ pub fn create_isomorphic_app(
     iso.add_plugin(crate::down::DownFeature);
     iso.add_plugin(crate::destroy::DestroyFeature);
     iso.add_plugin(crate::status::StatusFeature);
-    iso.add_plugin(crate::restart::ProtocolRestartPlugin::new(restart_requested));
+    iso.add_plugin(crate::restart::ProtocolRestartPlugin::new(
+        restart_requested,
+    ));
     iso
 }
 
@@ -30,11 +32,10 @@ pub fn create_isomorphic_app(
 /// Rendering is configured once here so command-specific client builders only
 /// need to add their own request/exit behavior.
 pub fn build_client_app(
-    iso: IsomorphicApp<OrchestratorMessage>,
+    mut app: AsyncApp<OrchestratorMessage>,
     render_mode: RenderMode,
     render_enabled: bool,
 ) -> AsyncApp<OrchestratorMessage> {
-    let mut app = iso.build_client();
     if render_enabled {
         app.add_plugins(RumRenderPlugin::new(render_mode));
     }

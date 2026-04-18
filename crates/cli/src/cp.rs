@@ -37,8 +37,8 @@ struct PendingCopyRequest(CopyRequest);
 
 /// Parse the user-facing `rum cp` arguments and resolve the host-side path to
 /// an absolute path before handing control to the daemon.
-pub fn prepare_request(src: &str, dst: &str) -> Result<CopyRequest, Box<dyn std::error::Error>> {
-    let direction = guest::client::parse_copy_args(src, dst).map_err(|error| error.to_string())?;
+pub fn prepare_request(src: &str, dst: &str) -> anyhow::Result<CopyRequest> {
+    let direction = guest::client::parse_copy_args(src, dst)?;
     let spec = match direction {
         CopyDirection::Upload { local, guest } => CopySpec::Upload {
             local: absolutize_local(local)?,
@@ -166,7 +166,7 @@ fn handle_copy_response(trigger: On<CopyResponse>, mut exit: MessageWriter<AppEx
     }
 }
 
-fn absolutize_local(path: PathBuf) -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn absolutize_local(path: PathBuf) -> anyhow::Result<PathBuf> {
     if path.is_absolute() {
         return Ok(path);
     }

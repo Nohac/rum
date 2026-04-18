@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-
 use ecsdk::app::AsyncApp;
 use ecsdk::network::IsomorphicAppExt;
 use ecsdk::prelude::*;
@@ -47,8 +46,10 @@ pub async fn load_server_spec(config_path: &Path) -> Result<ServerSpec, Error> {
 }
 
 /// Build the first server-side daemon app for `rum up`.
-pub fn build_up_server(spec: ServerSpec) -> AsyncApp<OrchestratorMessage> {
-    let iso = crate::app::create_isomorphic_app(spec.socket_path);
+pub fn build_up_server(
+    iso: ecsdk::network::IsomorphicApp<OrchestratorMessage>,
+    spec: ServerSpec,
+) -> AsyncApp<OrchestratorMessage> {
     let mut app = iso.build_server();
     app.add_shared_plugin(OrchestratorPlugin::<LibvirtDriver>::default());
     app.add_plugins(RumServerPlugin);
