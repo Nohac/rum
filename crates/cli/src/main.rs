@@ -53,6 +53,13 @@ enum StartsDaemonCmd {
 enum RequiresDaemonCmd {
     /// Ask the daemon to shut down the current machine.
     Down,
+    /// Copy files to or from the managed guest.
+    Cp {
+        /// Source path. Prefix the guest path with `:`.
+        src: String,
+        /// Destination path. Prefix the guest path with `:`.
+        dst: String,
+    },
     /// Query the daemon for the current machine status.
     Status {
         /// Keep the status client attached and render live updates.
@@ -109,6 +116,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     run_down(app).await?;
                     down_args(&cli.config, cli.output)
                 }
+                RequiresDaemonCmd::Cp { src, dst } => {
+                    let app = cli::app::build_client_app(iso, cli.output, false);
+                    run_cp(app, &src, &dst).await?;
+                    cp_args(&cli.config, cli.output, &src, &dst)
+                }
                 RequiresDaemonCmd::Status { watch, wait_ready } => {
                     let render_enabled = watch || wait_ready;
                     let app = cli::app::build_client_app(iso, cli.output, render_enabled);
@@ -120,14 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Maybe(cmd) => match cmd {
             MaybeDaemonCmd::Destroy => {
                 let app = cli::app::build_client_app(iso, cli.output, true);
-                run_destroy(
-                    &cli.config,
-                    system.clone(),
-                    app,
-                    restart_requested.clone(),
-                    cli.output,
-                )
-                .await?;
+                run_destroy(system.clone(), app).await?;
                 destroy_args(&cli.config, cli.output)
             }
         },
@@ -206,12 +211,20 @@ async fn run_status(
     Ok(())
 }
 
+async fn run_cp(
+    app: ecsdk::app::AsyncApp<orchestrator::OrchestratorMessage>,
+    src: &str,
+    dst: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let request = cli::cp::prepare_request(src, dst)?;
+    let app = cli::cp::build_cp_client(app, request);
+    app.run().await;
+    Ok(())
+}
+
 async fn run_destroy(
-    config_path: &Path,
     system: SystemConfig,
     app: ecsdk::app::AsyncApp<orchestrator::OrchestratorMessage>,
-    restart_requested: Arc<AtomicBool>,
-    render_mode: RenderMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = cli::ipc::socket_path(&system);
 
@@ -224,13 +237,6 @@ async fn run_destroy(
 
     let app = cli::destroy::build_destroy_client(app);
     app.run().await;
-    maybe_restart_daemon(
-        config_path,
-        &system,
-        restart_requested,
-        destroy_args(config_path, render_mode),
-    )
-    .await?;
     Ok(())
 }
 
@@ -361,6 +367,18 @@ fn down_args(config_path: &Path, render_mode: RenderMode) -> Vec<OsString> {
         OsString::from("--output"),
         render_mode_arg(render_mode),
         OsString::from("down"),
+    ]
+}
+
+fn cp_args(config_path: &Path, render_mode: RenderMode, src: &str, dst: &str) -> Vec<OsString> {
+    vec![
+        OsString::from("--config"),
+        config_path.as_os_str().to_os_string(),
+        OsString::from("--output"),
+        render_mode_arg(render_mode),
+        OsString::from("cp"),
+        OsString::from(src),
+        OsString::from(dst),
     ]
 }
 

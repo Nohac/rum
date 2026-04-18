@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use ecsdk::prelude::*;
 use machine::instance::InstanceState;
 use orchestrator::InstancePhase;
@@ -24,6 +26,27 @@ pub struct DestroyRequest;
 #[derive(Event, Serialize, Deserialize)]
 pub struct DestroyResponse {
     pub accepted: bool,
+}
+
+/// Direction and resolved paths for a guest file copy request.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum CopySpec {
+    Upload { local: PathBuf, guest: String },
+    Download { guest: String, local: PathBuf },
+}
+
+/// Client requests that the daemon copy files to or from the managed guest.
+#[derive(Default, Clone, Event, ClientRequest, Serialize, Deserialize)]
+#[request(response = "CopyResponse")]
+pub struct CopyRequest {
+    pub spec: Option<CopySpec>,
+}
+
+/// Result of a file-copy request handled by the daemon.
+#[derive(Event, Serialize, Deserialize)]
+pub struct CopyResponse {
+    pub success: bool,
+    pub message: String,
 }
 
 /// Client requests a one-shot status snapshot from the daemon.

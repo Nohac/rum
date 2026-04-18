@@ -1,5 +1,6 @@
 pub mod app;
 pub mod client;
+pub mod cp;
 pub mod control;
 pub mod destroy;
 pub mod down;

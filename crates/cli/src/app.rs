@@ -17,6 +17,7 @@ pub fn create_isomorphic_app(
 ) -> IsomorphicApp<OrchestratorMessage> {
     let mut iso = IsomorphicApp::new();
     iso.add_plugin(crate::network::SharedNetworkPlugin::new(socket_path));
+    iso.add_plugin(crate::cp::CopyFeature);
     iso.add_plugin(crate::down::DownFeature);
     iso.add_plugin(crate::destroy::DestroyFeature);
     iso.add_plugin(crate::status::StatusFeature);
