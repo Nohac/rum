@@ -36,6 +36,8 @@ enum Command {
     Daemon,
 
     #[command(flatten)]
+    Direct(DirectCmd),
+    #[command(flatten)]
     Starts(StartsDaemonCmd),
     #[command(flatten)]
     Requires(RequiresDaemonCmd),
@@ -47,6 +49,20 @@ enum Command {
 enum StartsDaemonCmd {
     /// Start or attach to the current machine.
     Up,
+}
+
+#[derive(Subcommand)]
+enum DirectCmd {
+    /// Show provisioning logs from the local instance work directory.
+    Log {
+        /// Show only the newest failed provisioning log.
+        #[arg(long)]
+        failed: bool,
+
+        /// List available provisioning logs newest first.
+        #[arg(long)]
+        list: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -94,6 +110,21 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let system = load_config(&cli.config).context("failed to load machine config")?;
+
+    if let Command::Direct(cmd) = &cli.command {
+        return match cmd {
+            DirectCmd::Log { failed, list } => {
+                let selection = match (*failed, *list) {
+                    (true, true) => anyhow::bail!("--failed and --list are mutually exclusive"),
+                    (true, false) => cli::log::LogSelection::LatestFailed,
+                    (false, true) => cli::log::LogSelection::List,
+                    (false, false) => cli::log::LogSelection::Latest,
+                };
+                cli::log::run(&system, selection)
+            }
+        };
+    }
+
     let socket_path = cli::ipc::socket_path(&system);
     let restart_requested = Arc::new(AtomicBool::new(false));
     let iso = cli::app::create_isomorphic_app(socket_path, restart_requested.clone());
@@ -103,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Daemon => unreachable!("daemon command returns before client setup"),
+        Command::Direct(_) => unreachable!("direct commands return before daemon setup"),
         Command::Starts(cmd) => match cmd {
             StartsDaemonCmd::Up => {
                 app.add_plugins(RumRenderPlugin::new(cli.output));
