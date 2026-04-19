@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -32,9 +33,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Internal daemon entrypoint.
-    Daemon,
-
     #[command(flatten)]
     Direct(DirectCmd),
     #[command(flatten)]
@@ -97,17 +95,16 @@ enum MaybeDaemonCmd {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing();
-    let mut cli = Cli::parse();
-
-    if matches!(cli.command, Command::Daemon)
-        && let Some(config) = std::env::var_os(INTERNAL_DAEMON_CONFIG)
-    {
-        cli.config = PathBuf::from(config);
+    if let Some(config) = std::env::var_os(INTERNAL_DAEMON_CONFIG) {
+        return run_daemon(&PathBuf::from_str(
+            &config
+                .into_string()
+                .expect("failed to convert config path to string"),
+        )?)
+        .await;
     }
 
-    if matches!(cli.command, Command::Daemon) {
-        return run_daemon(&cli.config).await;
-    }
+    let cli = Cli::parse();
 
     let system = load_config(&cli.config).context("failed to load machine config")?;
 
@@ -133,7 +130,6 @@ async fn main() -> anyhow::Result<()> {
     let config_path = cli.config.canonicalize()?;
 
     match cli.command {
-        Command::Daemon => unreachable!("daemon command returns before client setup"),
         Command::Direct(_) => unreachable!("direct commands return before daemon setup"),
         Command::Starts(cmd) => match cmd {
             StartsDaemonCmd::Up => {
