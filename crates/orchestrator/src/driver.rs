@@ -3,6 +3,7 @@ use guest::agent::ProvisionScript;
 use machine::driver::{Driver, LibvirtDriver, RecoverableDriver};
 use machine::error::Error;
 use machine::guest::VsockConnector;
+use tokio::sync::mpsc::UnboundedSender;
 
 /// Driver surface required by the orchestrator state machines.
 ///
@@ -20,6 +21,17 @@ pub trait OrchestrationDriver:
 
     /// Run the current provisioning plan.
     async fn provision(&self, scripts: Vec<ProvisionScript>) -> Result<(), Error>;
+
+    /// Run the current provisioning plan and emit line-oriented output as it
+    /// arrives from the guest.
+    async fn provision_with_output(
+        &self,
+        scripts: Vec<ProvisionScript>,
+        output: UnboundedSender<String>,
+    ) -> Result<(), Error> {
+        let _ = output;
+        self.provision(scripts).await
+    }
 }
 
 #[async_trait]
@@ -44,6 +56,26 @@ impl OrchestrationDriver for LibvirtDriver {
 
         client
             .provision(scripts, &self.layout().logs_dir)
+            .await
+            .map_err(map_guest_error)
+    }
+
+    async fn provision_with_output(
+        &self,
+        scripts: Vec<ProvisionScript>,
+        output: UnboundedSender<String>,
+    ) -> Result<(), Error> {
+        if scripts.is_empty() {
+            return Ok(());
+        }
+
+        let cid = self.get_vsock_cid()?;
+        let client = guest::client::wait_for_agent(VsockConnector::new(cid))
+            .await
+            .map_err(map_guest_error)?;
+
+        client
+            .provision_with_output(scripts, &self.layout().logs_dir, output)
             .await
             .map_err(map_guest_error)
     }

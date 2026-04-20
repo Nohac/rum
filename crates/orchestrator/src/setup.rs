@@ -5,7 +5,8 @@ use guest::agent::ProvisionScript;
 
 use crate::driver::OrchestrationDriver;
 use crate::instance::{
-    InstanceLabel, ManagedInstance, ProvisionPlan, ResolvedBaseImage, instance_phase::Recovering,
+    InstanceLabel, LogBuffer, ManagedInstance, ProvisionLogView, ProvisionPlan, ResolvedBaseImage,
+    instance_phase::Recovering,
 };
 use crate::lifecycle::build_instance_sm;
 
@@ -63,7 +64,9 @@ pub fn spawn_managed_instance<D: OrchestrationDriver>(
 ) -> Entity {
     let mut entity = world.spawn((
         Replicated,
+        LogBuffer::default(),
         ManagedInstance(spec.instance),
+        ProvisionLogView::default(),
         ProvisionPlan(spec.provision_plan),
         build_instance_sm::<D>(),
         Recovering,

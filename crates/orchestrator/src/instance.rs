@@ -31,6 +31,47 @@ pub struct ProvisionPlan(pub Vec<ProvisionScript>);
 #[derive(Component, Clone, Debug, Deref, Serialize, Deserialize)]
 pub struct EntityError(pub String);
 
+/// Non-replicated buffer of line-oriented runtime output collected on the
+/// server before it is drained into replicated log entries.
+#[derive(Clone, Debug)]
+pub struct LogLine {
+    pub text: String,
+}
+
+/// Server-local log buffer for one managed instance.
+#[derive(Component, Default)]
+pub struct LogBuffer {
+    pub lines: Vec<LogLine>,
+}
+
+impl LogBuffer {
+    pub fn push(&mut self, text: impl Into<String>) {
+        self.lines.push(LogLine { text: text.into() });
+    }
+
+    pub fn drain(&mut self) -> impl Iterator<Item = LogLine> + '_ {
+        self.lines.drain(..)
+    }
+}
+
+/// Replicated immutable log entry linked to one managed instance.
+#[derive(Component, Clone, Debug, Serialize, Deserialize)]
+#[relationship(relationship_target = ProvisionLogView)]
+#[component(immutable)]
+pub struct ProvisionLogEntry {
+    #[entities]
+    #[relationship]
+    pub target: Entity,
+    pub label: String,
+    pub message: String,
+}
+
+/// Replicated relationship target that holds the ordered log entries for one
+/// managed instance.
+#[derive(Component, Default, Clone, Debug, Serialize, Deserialize)]
+#[relationship_target(relationship = ProvisionLogEntry, linked_spawn)]
+pub struct ProvisionLogView(Vec<Entity>);
+
 /// Marker inserted once the prepare step has completed successfully.
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct PrepareFinished;

@@ -16,7 +16,7 @@ machine = { path = "crates/machine" }
 orchestrator = { path = "crates/orchestrator" }
 
 async-trait = "0.1"
-bevy = { version = "0.18", default-features = false, features = ["multi_threaded", "bevy_state"] }
+bevy = { version = "0.18", default-features = false, features = ["multi_threaded", "bevy_state", "serialize"] }
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 ecsdk = { git = "https://github.com/Nohac/ecsdk", features = ["app", "tasks", "network", "macros"] }

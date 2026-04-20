@@ -4,10 +4,13 @@ use seldom_state::prelude::*;
 
 use crate::driver::OrchestrationDriver;
 use crate::instance::{
-    BootFinished, EntityError, GuestConnected, ManagedInstance, PrepareFinished,
-    ProvisionFinished, ProvisionPlan, RecoveredState, ResolvedBaseImage, ShutdownFinished,
+    BootFinished, EntityError, GuestConnected, InstanceLabel, LogBuffer, ManagedInstance,
+    PrepareFinished, ProvisionFinished, ProvisionLogEntry, ProvisionLogView, ProvisionPlan,
+    RecoveredState, ResolvedBaseImage, ShutdownFinished,
     instance_phase::{Booting, ConnectingGuest, Failed, Preparing, Provisioning, Recovering, Running, ShuttingDown, Stopped},
 };
+
+const LOG_ENTRY_CAP: usize = 200;
 
 /// Resource toggled when a shutdown has been requested.
 #[derive(Resource, Default)]
@@ -282,13 +285,27 @@ fn on_provisioning<D: OrchestrationDriver>(
 
     let driver = instance.0.driver();
     commands.entity(entity).spawn_task(move |task| async move {
-        match driver.provision(scripts).await {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let log_task = task.clone();
+        let log_stream = tokio::spawn(async move {
+            while let Some(line) = rx.recv().await {
+                log_task.queue_cmd_tick(move |world: &mut World| {
+                    if let Some(mut buffer) = world.get_mut::<LogBuffer>(entity) {
+                        buffer.push(line);
+                    }
+                });
+            }
+        });
+
+        match driver.provision_with_output(scripts, tx).await {
             Ok(()) => task.send_msg(OrchestratorMessage::ProvisionFinished { entity }),
             Err(error) => task.send_msg(OrchestratorMessage::OperationFailed {
                 entity,
                 message: error.to_string(),
             }),
         }
+
+        let _ = log_stream.await;
     });
 }
 
@@ -334,6 +351,47 @@ impl<D: OrchestrationDriver> IsomorphicPlugin for OrchestratorPlugin<D> {
         app.add_observer(on_connecting_guest::<D>);
         app.add_observer(on_provisioning::<D>);
         app.add_observer(on_shutting_down::<D>);
+    }
+
+    fn build_server(&self, app: &mut App) {
+        app.add_systems(Update, sync_log_entries);
+    }
+}
+
+fn sync_log_entries(
+    mut commands: Commands,
+    mut buffers: Query<(Entity, &InstanceLabel, &mut LogBuffer), Changed<LogBuffer>>,
+    related: Query<&ProvisionLogView>,
+) {
+    let mut appended_any = false;
+
+    for (entity, label, mut buffer) in &mut buffers {
+        let mut appended_count = 0usize;
+        for line in buffer.drain() {
+            appended_count += 1;
+            appended_any = true;
+            commands.spawn((
+                Replicated,
+                ProvisionLogEntry {
+                    target: entity,
+                    label: label.0.clone(),
+                    message: line.text,
+                },
+            ));
+        }
+
+        if appended_count > 0
+            && let Ok(entries) = related.get(entity)
+        {
+            let excess = (entries.len() + appended_count).saturating_sub(LOG_ENTRY_CAP);
+            for entry in entries.iter().take(excess) {
+                commands.entity(entry).despawn();
+            }
+        }
+    }
+
+    if appended_any {
+        commands.tick();
     }
 }
 
@@ -423,7 +481,10 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(CmdQueue::test());
         app.insert_resource(MessageQueue::<OrchestratorMessage>::test());
-        app.add_shared_plugin(OrchestratorPlugin::<MockDriver>::default());
+        app.add_isomorphic_plugin(
+            ecsdk::network::AppRole::Server,
+            OrchestratorPlugin::<MockDriver>::default(),
+        );
         app
     }
 

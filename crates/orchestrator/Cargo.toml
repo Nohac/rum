@@ -14,6 +14,6 @@ seldom_state.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros"] }

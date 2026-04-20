@@ -51,7 +51,10 @@ pub fn build_up_server(
     spec: ServerSpec,
 ) -> AsyncApp<OrchestratorMessage> {
     let mut app = iso.build_server();
-    app.add_shared_plugin(OrchestratorPlugin::<LibvirtDriver>::default());
+    app.add_isomorphic_plugin(
+        ecsdk::network::AppRole::Server,
+        OrchestratorPlugin::<LibvirtDriver>::default(),
+    );
     app.add_plugins(RumServerPlugin);
     spawn_managed_instance(app.world_mut(), spec.managed_instance);
     app
