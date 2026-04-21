@@ -7,30 +7,38 @@ where
     C: roam_stream::Connector,
 {
     pub async fn exec(&self, command: String) -> Result<i32, ClientError> {
-        use tokio::io::AsyncWriteExt;
+        use std::io::Write;
 
+        self.exec_with_output(command, |event| match event.stream {
+            LogStream::Stdout => {
+                let mut stdout = std::io::stdout().lock();
+                let _ = writeln!(stdout, "{}", event.message);
+                let _ = stdout.flush();
+            }
+            LogStream::Stderr | LogStream::Log => {
+                let mut stderr = std::io::stderr().lock();
+                let _ = writeln!(stderr, "{}", event.message);
+                let _ = stderr.flush();
+            }
+        })
+        .await
+    }
+
+    pub async fn exec_with_output<F>(
+        &self,
+        command: String,
+        on_output: F,
+    ) -> Result<i32, ClientError>
+    where
+        F: Fn(LogEvent) + Send + Sync,
+    {
         let (tx, mut rx) = roam::channel::<LogEvent>();
         let agent = self.rpc().clone();
         let exec_task = tokio::spawn(async move { agent.exec(command, tx).await });
 
-        let stream_task = tokio::spawn(async move {
-            let mut stdout = tokio::io::stdout();
-            let mut stderr = tokio::io::stderr();
-            while let Ok(Some(event)) = rx.recv().await {
-                match event.stream {
-                    LogStream::Stdout => {
-                        let _ = stdout.write_all(event.message.as_bytes()).await;
-                        let _ = stdout.write_all(b"\n").await;
-                        let _ = stdout.flush().await;
-                    }
-                    LogStream::Stderr | LogStream::Log => {
-                        let _ = stderr.write_all(event.message.as_bytes()).await;
-                        let _ = stderr.write_all(b"\n").await;
-                        let _ = stderr.flush().await;
-                    }
-                }
-            }
-        });
+        while let Ok(Some(event)) = rx.recv().await {
+            on_output(event);
+        }
 
         let result = exec_task
             .await
@@ -42,8 +50,6 @@ where
                 context: "exec RPC failed".into(),
                 message: message.to_string(),
             })?;
-
-        let _ = stream_task.await;
         Ok(result.exit_code.unwrap_or(1))
     }
 }

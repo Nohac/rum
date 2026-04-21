@@ -285,27 +285,22 @@ fn on_provisioning<D: OrchestrationDriver>(
 
     let driver = instance.0.driver();
     commands.entity(entity).spawn_task(move |task| async move {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let log_task = task.clone();
-        let log_stream = tokio::spawn(async move {
-            while let Some(line) = rx.recv().await {
-                log_task.queue_cmd_tick(move |world: &mut World| {
-                    if let Some(mut buffer) = world.get_mut::<LogBuffer>(entity) {
-                        buffer.push(line);
-                    }
-                });
-            }
+        let on_output = std::sync::Arc::new(move |line: String| {
+            log_task.queue_cmd_tick(move |world: &mut World| {
+                if let Some(mut buffer) = world.get_mut::<LogBuffer>(entity) {
+                    buffer.push(line);
+                }
+            });
         });
 
-        match driver.provision_with_output(scripts, tx).await {
+        match driver.provision_with_output(scripts, on_output).await {
             Ok(()) => task.send_msg(OrchestratorMessage::ProvisionFinished { entity }),
             Err(error) => task.send_msg(OrchestratorMessage::OperationFailed {
                 entity,
                 message: error.to_string(),
             }),
         }
-
-        let _ = log_stream.await;
     });
 }
 

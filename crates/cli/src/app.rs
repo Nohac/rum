@@ -20,6 +20,7 @@ pub fn create_isomorphic_app(
     iso.add_plugin(crate::cp::CopyFeature);
     iso.add_plugin(crate::down::DownFeature);
     iso.add_plugin(crate::destroy::DestroyFeature);
+    iso.add_plugin(crate::exec::ExecFeature);
     iso.add_plugin(crate::status::StatusFeature);
     iso.add_plugin(crate::restart::ProtocolRestartPlugin::new(
         restart_requested,

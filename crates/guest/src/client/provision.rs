@@ -2,8 +2,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use tokio::sync::mpsc::UnboundedSender;
-
 use crate::agent::{ProvisionEvent, ProvisionScript};
 
 use super::{Client, ClientError};
@@ -17,16 +15,18 @@ where
         scripts: Vec<ProvisionScript>,
         logs_dir: &Path,
     ) -> Result<(), ClientError> {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        self.provision_with_output(scripts, logs_dir, tx).await
+        self.provision_with_output(scripts, logs_dir, |_| ()).await
     }
 
-    pub async fn provision_with_output(
+    pub async fn provision_with_output<F>(
         &self,
         scripts: Vec<ProvisionScript>,
         logs_dir: &Path,
-        output: UnboundedSender<String>,
-    ) -> Result<(), ClientError> {
+        on_output: F,
+    ) -> Result<(), ClientError>
+    where
+        F: Fn(String) + Send + Sync + Clone,
+    {
         let script_names: Vec<String> = scripts.iter().map(|s| s.name.clone()).collect();
 
         let (tx, rx) = roam::channel::<ProvisionEvent>();
@@ -38,7 +38,7 @@ where
 
         for script_name in &script_names {
             let rx = rx.clone();
-            let output = output.clone();
+            let on_output = on_output.clone();
             let mut logger = ScriptLogger::new(logs_dir, script_name).ok();
             let success = async move {
                 let mut rx = rx.lock().await;
@@ -54,7 +54,7 @@ where
                             if let Some(ref mut lg) = logger {
                                 lg.write_line(line);
                             }
-                            let _ = output.send(line.clone());
+                            on_output(line.clone());
                         }
                     }
                 }

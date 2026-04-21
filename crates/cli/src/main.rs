@@ -10,6 +10,7 @@ use cli::render::{RenderMode, RumRenderPlugin};
 use machine::config::{SystemConfig, load_config};
 use machine::driver::{Driver, LibvirtDriver};
 use machine::instance::Instance;
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 
@@ -67,6 +68,12 @@ enum DirectCmd {
 enum RequiresDaemonCmd {
     /// Ask the daemon to shut down the current machine.
     Down,
+    /// Execute a shell command in the managed guest.
+    Exec {
+        /// Command string to execute in the guest shell.
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
     /// Copy files to or from the managed guest.
     Cp {
         /// Source path. Prefix the guest path with `:`.
@@ -146,6 +153,10 @@ async fn main() -> anyhow::Result<()> {
                 RequiresDaemonCmd::Down => {
                     run_down(app).await?;
                 }
+                RequiresDaemonCmd::Exec { command } => {
+                    app.add_plugins(RumRenderPlugin::new(cli.output));
+                    run_exec(app, &command).await?;
+                }
                 RequiresDaemonCmd::Cp { src, dst } => {
                     run_cp(app, &src, &dst).await?;
                 }
@@ -176,6 +187,7 @@ fn init_tracing() {
                 .with_writer(std::io::stderr)
                 .with_target(false),
         )
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .try_init();
 }
 
@@ -246,6 +258,16 @@ async fn run_cp(
 ) -> anyhow::Result<()> {
     let request = cli::cp::prepare_request(src, dst)?;
     let app = cli::cp::build_cp_client(app, request);
+    app.run().await;
+    Ok(())
+}
+
+async fn run_exec(
+    app: ecsdk::app::AsyncApp<orchestrator::OrchestratorMessage>,
+    command: &[String],
+) -> anyhow::Result<()> {
+    let request = cli::exec::prepare_request(command)?;
+    let app = cli::exec::build_exec_client(app, request);
     app.run().await;
     Ok(())
 }

@@ -49,6 +49,22 @@ pub struct CopyResponse {
     pub message: String,
 }
 
+/// Client requests that the daemon execute a shell command in the managed
+/// guest and stream its output through the replicated log pipeline.
+#[derive(Default, Clone, Event, ClientRequest, Serialize, Deserialize)]
+#[request(response = "ExecResponse")]
+pub struct ExecRequest {
+    pub command: Option<String>,
+}
+
+/// Final result of a guest exec request handled by the daemon.
+#[derive(Event, Serialize, Deserialize)]
+pub struct ExecResponse {
+    pub success: bool,
+    pub exit_code: i32,
+    pub message: Option<String>,
+}
+
 /// Client requests a one-shot status snapshot from the daemon.
 #[derive(Default, Event, ClientRequest, Serialize, Deserialize)]
 #[request(response = "StatusResponse")]

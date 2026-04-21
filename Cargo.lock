@@ -4134,7 +4134,6 @@ dependencies = [
  "seldom_state",
  "serde",
  "thiserror 2.0.18",
- "tokio",
  "tracing",
 ]
 

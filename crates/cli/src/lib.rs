@@ -4,6 +4,7 @@ pub mod cp;
 pub mod control;
 pub mod destroy;
 pub mod down;
+pub mod exec;
 pub mod exit;
 pub mod ipc;
 pub mod log;
